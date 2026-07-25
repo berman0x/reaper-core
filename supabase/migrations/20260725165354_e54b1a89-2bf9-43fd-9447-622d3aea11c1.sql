@@ -1,0 +1,1 @@
+REVOKE EXECUTE ON FUNCTION public.reaper_tick() FROM PUBLIC, anon, authenticated;
