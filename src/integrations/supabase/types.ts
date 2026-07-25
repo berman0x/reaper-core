@@ -14,13 +14,120 @@ export type Database = {
   }
   public: {
     Tables: {
-      [_ in never]: never
+      reaper_activity: {
+        Row: {
+          created_at: string
+          event_type: string
+          id: number
+          message: string
+          node_id: string | null
+        }
+        Insert: {
+          created_at?: string
+          event_type: string
+          id?: number
+          message: string
+          node_id?: string | null
+        }
+        Update: {
+          created_at?: string
+          event_type?: string
+          id?: number
+          message?: string
+          node_id?: string | null
+        }
+        Relationships: []
+      }
+      reaper_nodes: {
+        Row: {
+          id: string
+          last_ping: string
+          ping_ms: number | null
+          region: string
+          status: string
+          updated_at: string
+          uptime_s: number
+          version: string
+        }
+        Insert: {
+          id: string
+          last_ping?: string
+          ping_ms?: number | null
+          region: string
+          status: string
+          updated_at?: string
+          uptime_s?: number
+          version: string
+        }
+        Update: {
+          id?: string
+          last_ping?: string
+          ping_ms?: number | null
+          region?: string
+          status?: string
+          updated_at?: string
+          uptime_s?: number
+          version?: string
+        }
+        Relationships: []
+      }
+      reaper_perf: {
+        Row: {
+          id: number
+          latency_ms: number
+          sampled_at: string
+          success_rate: number
+        }
+        Insert: {
+          id?: number
+          latency_ms: number
+          sampled_at?: string
+          success_rate: number
+        }
+        Update: {
+          id?: number
+          latency_ms?: number
+          sampled_at?: string
+          success_rate?: number
+        }
+        Relationships: []
+      }
+      reaper_queue: {
+        Row: {
+          created_at: string
+          eta_seconds: number
+          id: string
+          label: string
+          progress: number
+          state: string
+          updated_at: string
+        }
+        Insert: {
+          created_at?: string
+          eta_seconds?: number
+          id: string
+          label: string
+          progress?: number
+          state?: string
+          updated_at?: string
+        }
+        Update: {
+          created_at?: string
+          eta_seconds?: number
+          id?: string
+          label?: string
+          progress?: number
+          state?: string
+          updated_at?: string
+        }
+        Relationships: []
+      }
     }
     Views: {
       [_ in never]: never
     }
     Functions: {
-      [_ in never]: never
+      reaper_tick: { Args: never; Returns: undefined }
     }
     Enums: {
       [_ in never]: never
