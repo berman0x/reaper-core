@@ -249,8 +249,11 @@ function ReaperDashboard() {
     useReaperTelemetry();
   const { theme, toggle } = useTheme();
 
-  const [now, setNow] = useState(() => new Date());
+  // Starts null so SSR markup and the first client render match (no hydration
+  // mismatch); the real clock starts after mount.
+  const [now, setNow] = useState<Date | null>(null);
   useEffect(() => {
+    setNow(new Date());
     const id = setInterval(() => setNow(new Date()), 1000);
     return () => clearInterval(id);
   }, []);
@@ -361,8 +364,8 @@ function ReaperDashboard() {
           />
           <MetricCard
             label="Last Tick"
-            value={now.toISOString().slice(11, 19)}
-            sub={now.toISOString().slice(0, 10) + " UTC"}
+            value={now ? now.toISOString().slice(11, 19) : "—"}
+            sub={now ? now.toISOString().slice(0, 10) + " UTC" : "waiting for clock"}
             accent="neon"
             icon={<Timer className="h-4 w-4" />}
           />
@@ -636,7 +639,7 @@ function ReaperDashboard() {
 
         <footer className="flex flex-wrap items-center justify-between gap-2 pb-2 pt-2 font-mono text-[10px] uppercase tracking-widest text-muted-foreground">
           <span>REAPER // TERMINAL v7.3.1 · LIVE FEED</span>
-          <span>© {now.getUTCFullYear()} SECRSCH LAB</span>
+          <span>© {now ? now.getUTCFullYear() : "----"} SECRSCH LAB</span>
         </footer>
       </div>
     </div>
@@ -653,7 +656,7 @@ function TopNav({
   onExport,
   onRefresh,
 }: {
-  now: Date;
+  now: Date | null;
   conn: Conn;
   theme: "dark" | "light";
   onToggleTheme: () => void;
@@ -680,7 +683,7 @@ function TopNav({
         <ConnectionBadge conn={conn} />
         <div className="hidden font-mono text-xs text-muted-foreground md:block">
           <span className="text-[color:var(--cyan)]">SYS</span>{" "}
-          {now.toISOString().replace("T", " ").slice(0, 19)} UTC
+          {now ? now.toISOString().replace("T", " ").slice(0, 19) : "--:--:--"} UTC
         </div>
         <IconButton
           label="Refresh telemetry"
@@ -959,7 +962,8 @@ function fmtEta(s: number): string {
   return `${String(m).padStart(2, "0")}:${String(sec).padStart(2, "0")}`;
 }
 
-function relTime(then: Date, now: Date): string {
+function relTime(then: Date, now: Date | null): string {
+  if (!now) return "—";
   const diff = Math.max(0, Math.floor((now.getTime() - then.getTime()) / 1000));
   if (diff < 5) return "just now";
   if (diff < 60) return `${diff}s ago`;
