@@ -685,6 +685,13 @@ function TopNav({
           <span className="text-[color:var(--cyan)]">SYS</span>{" "}
           {now ? now.toISOString().replace("T", " ").slice(0, 19) : "--:--:--"} UTC
         </div>
+        <Link
+          to="/terminal"
+          className="flex items-center gap-1.5 rounded-md border border-[color:var(--cyan)]/40 bg-[color:var(--surface-2)] px-3 py-2 font-mono text-[11px] uppercase tracking-widest text-[color:var(--cyan)] transition-colors hover:bg-[color:var(--cyan)]/10"
+        >
+          <TerminalSquare className="h-3.5 w-3.5" />
+          Terminal
+        </Link>
         <IconButton
           label="Refresh telemetry"
           onClick={onRefresh}
