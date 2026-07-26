@@ -21,6 +21,7 @@ import {
   Signal,
   Sun,
   Timer,
+  TerminalSquare,
   WifiOff,
   X,
 } from "lucide-react";
