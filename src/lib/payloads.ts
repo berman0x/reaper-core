@@ -390,6 +390,37 @@ export const PAYLOADS: PayloadDef[] = [
       line("[✓] web.techstack complete", "success", 200),
     ],
   },
-];
-
-export const PAYLOAD_MAP = Object.fromEntries(PAYLOADS.map((p) => [p.id, p]));
+  {
+    id: "recon.shodan",
+    label: "recon.shodan",
+    description: "Shodan lookup: open ports, services, and geolocation.",
+    steps: [
+      line((t) => `$ reaper exec recon.shodan --target ${t}`, "cmd", 60),
+      line((t) => `[→] Resolving ${t} ...`, "info", 200),
+      line("[+] IP: 203.0.113.42", "success", 180),
+      line("[→] Querying api.shodan.io/host/203.0.113.42 ...", "info", 260),
+      line("[+] Record retrieved (last_update 2026-07-24T09:14:22Z)", "success", 240),
+      line("  Country:      United States (US)", "info", 160),
+      line("  City:         Ashburn, VA", "info", 160),
+      line("  Coords:       39.0438, -77.4874", "info", 160),
+      line("  ISP:          Amazon.com, Inc.", "info", 160),
+      line("  ASN:          AS16509", "info", 160),
+      line("  OS:           Linux 5.x", "info", 160),
+      line("[→] Enumerating exposed services ...", "info", 220),
+      line("  [✓]   22/tcp   OpenSSH 9.2p1        (banner leaked)", "success", 200),
+      line("  [✓]   80/tcp   nginx 1.24.0", "success", 200),
+      line("  [✓]  443/tcp   nginx 1.24.0 (TLS 1.3)", "success", 200),
+      line("  [!] 2375/tcp   Docker Engine 24.0   (UNAUTH API!)", "error", 240),
+      line("  [!] 9200/tcp   Elasticsearch 7.17   (public index!)", "error", 240),
+      line("[+] Tags: cloud, self-signed, vuln", "warn", 200),
+      line("[!] 2 critical exposures on record", "error", 240),
+      line("[✓] recon.shodan complete", "success", 200),
+    ],
+  },
+  {
+    id: "recon.censys",
+    label: "recon.censys",
+    description: "Censys enrichment: SSL certs, organization, ASN.",
+    steps: [
+      line((t) => `$ reaper exec recon.censys --target ${t}`, "cmd", 60),
+      line((t) => `[→] search.censys.io/hosts?q=${t}`, "info", 260
