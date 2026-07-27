@@ -567,7 +567,7 @@ function TerminalPage() {
                   <span className="relative ml-1 h-1 flex-1 overflow-hidden rounded bg-[color:var(--surface-2)]">
                     <span
                       className="absolute inset-y-0 left-0 bg-[color:var(--cyan)]/80 transition-[width] duration-300"
-                      style={{ width: `${progress}%` }}
+                      style={{ width: `${pct}%` }}
                     />
                   </span>
                 )}
