@@ -282,6 +282,73 @@ function TerminalPage() {
     abortRef.current?.abort();
   };
 
+  // CLEAR wipes the terminal only — execution history is preserved.
   const clearTerminal = () => {
     cancelRef.current++;
     queueRef.current = [];
+    doneRef.current = null;
+    abortRef.current?.abort();
+    setProgress(0);
+    reset();
+  };
+
+  /* --------------------------- target history --------------------------- */
+  const onTargetKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (e.key === "Enter") {
+      e.preventDefault();
+      void execute();
+      return;
+    }
+    if (e.key !== "ArrowUp" && e.key !== "ArrowDown") return;
+    if (targetHistory.length === 0) return;
+    e.preventDefault();
+    const next =
+      e.key === "ArrowUp"
+        ? Math.min(histIndex + 1, targetHistory.length - 1)
+        : histIndex - 1;
+    setHistIndex(next);
+    setTarget(next < 0 ? "" : targetHistory[next]);
+  };
+
+  /* -------------------------------- export ------------------------------ */
+  const exportLog = (ext: "log" | "txt") => {
+    const lines = output
+      .map(
+        (o) =>
+          `[${new Date(o.ts).toISOString()}] [${o.level.toUpperCase()}] ${o.line}`,
+      )
+      .join("\n");
+    const header = [
+      `# Reaper execution log`,
+      `# target:  ${target}`,
+      `# payload: ${payload}`,
+      `# exported: ${new Date().toISOString()}`,
+      "",
+    ].join("\n");
+    const blob = new Blob([header + lines + "\n"], {
+      type: "text/plain;charset=utf-8",
+    });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `reaper-${payload}-${Date.now()}.${ext}`;
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+
+  const statusInfo = useMemo(() => {
+    switch (status) {
+      case "executing":
+        return { label: "EXECUTING", color: "var(--cyan)" };
+      case "success":
+        return { label: "SUCCESS", color: "var(--neon)" };
+      case "error":
+        return { label: "ERROR", color: "var(--danger)" };
+      case "stopped":
+        return { label: "STOPPED", color: "var(--warn)" };
+      default:
+        return { label: "IDLE", color: "var(--muted-foreground)" };
+    }
+  }, [status]);
+
+  const scrollActive = !scrollLocked && autoScroll;
