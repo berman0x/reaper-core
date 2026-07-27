@@ -345,20 +345,35 @@ function TerminalPage() {
                 <div className="mt-1 inline-block h-3.5 w-2 animate-pulse bg-[color:var(--neon)]" />
               )}
             </div>
-            <div className="flex flex-wrap items-center justify-between gap-2 border-t border-border/50 px-4 py-2 font-mono text-[10px] uppercase tracking-widest text-muted-foreground">
-              <span>
-                lines <span className="text-foreground">{output.length}</span>
-              </span>
-              <span>
-                autoscroll{" "}
-                <span className="text-foreground">
-                  {autoScroll ? "on" : "paused"}
+            <div className="flex flex-col gap-1 border-t border-border/50 px-4 py-2 font-mono text-[10px] uppercase tracking-widest text-muted-foreground">
+              <div className="flex items-center gap-2">
+                <span>module</span>
+                <span className="truncate text-[color:var(--cyan)]">{payload}</span>
+                {isExecuting && (
+                  <>
+                    <span className="ml-1">·</span>
+                    <span className="text-foreground">running</span>
+                    <span className="relative ml-1 h-1 flex-1 overflow-hidden rounded bg-[color:var(--surface-2)]">
+                      <span className="absolute inset-y-0 left-0 w-1/3 animate-[scan_1.2s_linear_infinite] bg-[color:var(--cyan)]/70" />
+                    </span>
+                  </>
+                )}
+              </div>
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <span>
+                  lines <span className="text-foreground">{output.length}</span>
                 </span>
-              </span>
-              <span>
-                state{" "}
-                <span style={{ color: statusInfo.color }}>{statusInfo.label}</span>
-              </span>
+                <span>
+                  autoscroll{" "}
+                  <span className="text-foreground">
+                    {autoScroll ? "on" : "paused"}
+                  </span>
+                </span>
+                <span>
+                  state{" "}
+                  <span style={{ color: statusInfo.color }}>{statusInfo.label}</span>
+                </span>
+              </div>
             </div>
           </div>
 
