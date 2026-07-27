@@ -344,9 +344,17 @@ function TerminalPage() {
   }, [status]);
 
   const scrollActive = !scrollLocked && autoScroll;
+  // Progress reflects what the operator can actually see: lines already typed
+  // out versus the module's total step count (server pct is the upper bound).
+  const totalSteps = PAYLOAD_MAP[payload]?.steps.length ?? 0;
+  const shown = totalSteps
+    ? Math.round((Math.min(output.length, totalSteps) / totalSteps) * 100)
+    : progress;
+  const pct = isExecuting ? Math.min(shown, progress || shown) : shown;
   const barWidth = 18;
-  const filled = Math.round((Math.min(100, Math.max(0, progress)) / 100) * barWidth);
-  const progressBar = `[${"█".repeat(filled)}${"░".repeat(barWidth - filled)}] ${String(progress).padStart(3)}%`;
+  const filled = Math.round((Math.min(100, Math.max(0, pct)) / 100) * barWidth);
+  const progressBar = `[${"█".repeat(filled)}${"░".repeat(barWidth - filled)}] ${String(pct).padStart(3)}%`;
+
 
   return (
     <div className="relative min-h-screen">
