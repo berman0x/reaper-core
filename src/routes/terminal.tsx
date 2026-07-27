@@ -345,7 +345,11 @@ function TerminalPage() {
                 <div className="mt-1 inline-block h-3.5 w-2 animate-pulse bg-[color:var(--neon)]" />
               )}
             </div>
-            <div className="flex flex-wrap items-center justify-between gap-2 border-t border-border/50 px-4 py-2 font-mono text-[10px] uppercase tracking-widest text-muted-foreground">
+            <div className="border-t border-border/50 px-4 pt-2">
+              <div className="flex items-center gap-2 font-mono text-[10px] uppercase tracking-widest text-muted-foreground">
+                <span className="truncate">
+                  module{" "}
+                  <span className="text-[color:var(--cyan)]">
               <span>
                 lines <span className="text-foreground">{output.length}</span>
               </span>
