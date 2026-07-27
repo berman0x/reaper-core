@@ -18,7 +18,7 @@ import {
   Minimize2,
   FileText,
 } from "lucide-react";
-import { PAYLOADS } from "@/lib/payloads";
+import { PAYLOADS, PAYLOAD_MAP } from "@/lib/payloads";
 import { useExecutionStore, type OutputLine } from "@/stores/reaper-execution";
 
 export const Route = createFileRoute("/terminal")({
