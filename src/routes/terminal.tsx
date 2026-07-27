@@ -385,3 +385,67 @@ function TerminalPage() {
           </header>
         )}
 
+        {/* Control bar */}
+        <section className="panel grid grid-cols-1 gap-3 p-3 sm:p-4 md:grid-cols-[minmax(0,1fr)_260px_auto]">
+          <label className="flex flex-col gap-1.5">
+            <span className="font-mono text-[10px] uppercase tracking-widest text-muted-foreground">
+              Target · press ↑/↓ to recall
+            </span>
+            <input
+              value={target}
+              onChange={(e) => {
+                setTarget(e.target.value);
+                setHistIndex(-1);
+              }}
+              onKeyDown={onTargetKeyDown}
+              placeholder="host.example.com or 10.0.0.4"
+              disabled={isExecuting}
+              className="hover-glow w-full rounded-md border border-border/60 bg-[color:var(--surface-2)] px-3 py-2 font-mono text-sm text-foreground placeholder:text-muted-foreground/60 focus:border-[color:var(--cyan)]/60 focus:outline-none disabled:opacity-60"
+            />
+          </label>
+          <label className="flex flex-col gap-1.5">
+            <span className="font-mono text-[10px] uppercase tracking-widest text-muted-foreground">
+              Payload
+            </span>
+            <select
+              value={payload}
+              onChange={(e) => setPayload(e.target.value)}
+              disabled={isExecuting}
+              className="hover-glow w-full rounded-md border border-border/60 bg-[color:var(--surface-2)] px-3 py-2 font-mono text-sm text-foreground focus:border-[color:var(--cyan)]/60 focus:outline-none disabled:opacity-60"
+            >
+              {PAYLOADS.map((p) => (
+                <option key={p.id} value={p.id}>
+                  {p.label}
+                </option>
+              ))}
+            </select>
+          </label>
+          <div className="flex flex-wrap items-end gap-2">
+            <button
+              onClick={execute}
+              disabled={isExecuting || !target.trim()}
+              className="inline-flex items-center gap-2 rounded-md border border-[color:var(--neon)]/50 bg-[color:var(--neon)]/10 px-4 py-2 font-mono text-xs font-semibold uppercase tracking-widest text-[color:var(--neon)] glow-neon transition hover:bg-[color:var(--neon)]/20 disabled:cursor-not-allowed disabled:opacity-40"
+            >
+              {isExecuting ? (
+                <>
+                  <Zap className="h-3.5 w-3.5 animate-pulse" />
+                  Executing...
+                </>
+              ) : (
+                <>
+                  <Play className="h-3.5 w-3.5" />
+                  Execute
+                </>
+              )}
+            </button>
+            <button
+              onClick={stop}
+              disabled={!isExecuting}
+              className="inline-flex items-center gap-2 rounded-md border border-[color:var(--danger)]/50 bg-[color:var(--danger)]/10 px-3 py-2 font-mono text-xs font-semibold uppercase tracking-widest text-[color:var(--danger)] transition hover:bg-[color:var(--danger)]/20 disabled:cursor-not-allowed disabled:opacity-30"
+            >
+              <Square className="h-3.5 w-3.5" />
+              Stop
+            </button>
+          </div>
+        </section>
+
