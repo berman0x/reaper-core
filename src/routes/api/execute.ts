@@ -78,7 +78,9 @@ export const Route = createFileRoute("/api/execute")({
             }
 
             try {
-              for (const step of payload.steps) {
+              const total = payload.steps.length;
+              for (let i = 0; i < total; i++) {
+                const step = payload.steps[i];
                 if (signal.aborted) return;
                 await new Promise((r) => setTimeout(r, step.delayMs));
                 if (signal.aborted) return;
@@ -86,8 +88,12 @@ export const Route = createFileRoute("/api/execute")({
                   line: step.line(target),
                   level: step.level,
                 });
+                send(controller, "progress", {
+                  pct: Math.round(((i + 1) / total) * 100),
+                });
               }
               send(controller, "done", { status: "success", execId });
+
             } catch (err) {
               send(controller, "output", {
                 line: `[x] internal error: ${String(err)}`,

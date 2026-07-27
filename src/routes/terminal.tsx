@@ -1,6 +1,6 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { Link } from "@tanstack/react-router";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Play,
   Square,
@@ -10,8 +10,15 @@ import {
   ChevronLeft,
   History as HistoryIcon,
   Zap,
+  Lock,
+  Unlock,
+  Volume2,
+  VolumeX,
+  Maximize2,
+  Minimize2,
+  FileText,
 } from "lucide-react";
-import { PAYLOADS } from "@/lib/payloads";
+import { PAYLOADS, PAYLOAD_MAP } from "@/lib/payloads";
 import { useExecutionStore, type OutputLine } from "@/stores/reaper-execution";
 
 export const Route = createFileRoute("/terminal")({
@@ -36,6 +43,8 @@ export const Route = createFileRoute("/terminal")({
   component: TerminalPage,
 });
 
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
 function TerminalPage() {
   const {
     target,
@@ -43,11 +52,17 @@ function TerminalPage() {
     output,
     status,
     history,
+    targetHistory,
+    soundEnabled,
     setTarget,
     setPayload,
     appendLine,
+    beginLine,
+    growLine,
+    pushTargetHistory,
+    toggleSound,
     reset,
-    clearAll,
+    clearHistory,
     beginExecution,
     finishExecution,
   } = useExecutionStore();
@@ -55,32 +70,111 @@ function TerminalPage() {
   const abortRef = useRef<AbortController | null>(null);
   const termRef = useRef<HTMLDivElement | null>(null);
   const [autoScroll, setAutoScroll] = useState(true);
+  const [scrollLocked, setScrollLocked] = useState(false);
   const [mounted, setMounted] = useState(false);
+  const [minimal, setMinimal] = useState(false);
+  const [progress, setProgress] = useState(0);
+  const [histIndex, setHistIndex] = useState(-1);
 
   useEffect(() => setMounted(true), []);
 
-  // auto-scroll to bottom on new lines
+  const isExecuting = status === "executing";
+
+  /* ---------------------------- typing sound ---------------------------- */
+  const audioRef = useRef<AudioContext | null>(null);
+  const soundRef = useRef(soundEnabled);
+  soundRef.current = soundEnabled;
+
+  const click = useCallback(() => {
+    if (!soundRef.current) return;
+    try {
+      const Ctx =
+        window.AudioContext ??
+        (window as unknown as { webkitAudioContext: typeof AudioContext })
+          .webkitAudioContext;
+      if (!audioRef.current) audioRef.current = new Ctx();
+      const ctx = audioRef.current;
+      if (ctx.state === "suspended") void ctx.resume();
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.type = "square";
+      osc.frequency.value = 1400 + Math.random() * 500;
+      gain.gain.setValueAtTime(0.015, ctx.currentTime);
+      gain.gain.exponentialRampToValueAtTime(0.0001, ctx.currentTime + 0.02);
+      osc.connect(gain).connect(ctx.destination);
+      osc.start();
+      osc.stop(ctx.currentTime + 0.025);
+    } catch {
+      /* audio unavailable */
+    }
+  }, []);
+
+  /* ------------------------- typewriter pipeline ------------------------ */
+  const queueRef = useRef<{ line: string; level: OutputLine["level"] }[]>([]);
+  const drainingRef = useRef(false);
+  const cancelRef = useRef(0);
+  const doneRef = useRef<"success" | "error" | "stopped" | null>(null);
+
+  const drain = useCallback(async () => {
+    if (drainingRef.current) return;
+    drainingRef.current = true;
+    const token = cancelRef.current;
+
+    while (queueRef.current.length > 0) {
+      const item = queueRef.current.shift()!;
+      if (cancelRef.current !== token) break;
+      beginLine(item.level);
+      const text = item.line;
+      let i = 0;
+      // Random per-line base speed keeps the rhythm from feeling mechanical.
+      const base = 4 + Math.random() * 10;
+      while (i < text.length) {
+        if (cancelRef.current !== token) {
+          drainingRef.current = false;
+          return;
+        }
+        const chunk = 1 + Math.floor(Math.random() * 3);
+        growLine(text.slice(i, i + chunk));
+        i += chunk;
+        click();
+        await sleep(base + Math.random() * 10);
+      }
+      await sleep(20 + Math.random() * 60);
+    }
+
+    drainingRef.current = false;
+    if (cancelRef.current === token && doneRef.current) {
+      finishExecution(doneRef.current);
+      doneRef.current = null;
+    }
+  }, [beginLine, growLine, click, finishExecution]);
+
+  const enqueue = useCallback(
+    (line: string, level: OutputLine["level"]) => {
+      queueRef.current.push({ line, level });
+      void drain();
+    },
+    [drain],
+  );
+
+  /* ------------------------------ scrolling ----------------------------- */
   useEffect(() => {
-    if (!autoScroll) return;
+    if (scrollLocked || !autoScroll) return;
     const el = termRef.current;
     if (el) el.scrollTop = el.scrollHeight;
-  }, [output, autoScroll]);
+  }, [output, autoScroll, scrollLocked]);
 
-  // detect manual scroll-up to pause auto-scroll
   const onScroll = () => {
+    if (scrollLocked) return;
     const el = termRef.current;
     if (!el) return;
     const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 40;
     setAutoScroll(atBottom);
   };
 
-  // cleanup on unmount
-  useEffect(() => {
-    return () => abortRef.current?.abort();
-  }, []);
+  useEffect(() => () => abortRef.current?.abort(), []);
 
-  const isExecuting = status === "executing";
-
+  /* ------------------------------ execution ----------------------------- */
   const execute = async () => {
     if (isExecuting) return;
     const t = target.trim();
@@ -92,6 +186,14 @@ function TerminalPage() {
       typeof crypto !== "undefined" && "randomUUID" in crypto
         ? crypto.randomUUID()
         : String(Date.now());
+
+    cancelRef.current++;
+    queueRef.current = [];
+    doneRef.current = null;
+    drainingRef.current = false;
+    setProgress(0);
+    setHistIndex(-1);
+    pushTargetHistory(t);
     beginExecution(execId);
 
     const ac = new AbortController();
@@ -99,6 +201,14 @@ function TerminalPage() {
 
     const qs = new URLSearchParams({ target: t, payload, id: execId });
     let finalOutcome: "success" | "error" | "stopped" = "error";
+
+    const settle = (outcome: "success" | "error" | "stopped") => {
+      if (drainingRef.current || queueRef.current.length > 0) {
+        doneRef.current = outcome;
+      } else {
+        finishExecution(outcome);
+      }
+    };
 
     try {
       const res = await fetch(`/api/execute?${qs.toString()}`, {
@@ -117,7 +227,6 @@ function TerminalPage() {
         const { value, done } = await reader.read();
         if (done) break;
         buf += decoder.decode(value, { stream: true });
-        // parse SSE frames separated by blank lines
         let idx;
         while ((idx = buf.indexOf("\n\n")) !== -1) {
           const frame = buf.slice(0, idx);
@@ -134,21 +243,25 @@ function TerminalPage() {
           }
           if (evt === "output") {
             const d = data as { line: string; level: OutputLine["level"] };
-            appendLine(d.line, d.level);
+            enqueue(d.line, d.level);
+          } else if (evt === "progress") {
+            setProgress((data as { pct: number }).pct);
           } else if (evt === "done") {
             const d = data as { status: "success" | "error" | "stopped" };
             finalOutcome = d.status;
           }
         }
       }
-      finishExecution(finalOutcome);
+      settle(finalOutcome);
     } catch (err) {
       if ((err as Error).name === "AbortError") {
+        cancelRef.current++;
+        queueRef.current = [];
         appendLine("[!] connection closed by operator", "warn");
         finishExecution("stopped");
       } else {
         appendLine(`[x] ${(err as Error).message}`, "error");
-        finishExecution("error");
+        settle("error");
       }
     } finally {
       abortRef.current = null;
@@ -156,15 +269,46 @@ function TerminalPage() {
   };
 
   const stop = () => {
+    cancelRef.current++;
+    queueRef.current = [];
     abortRef.current?.abort();
   };
 
-  const exportLog = () => {
+  // CLEAR wipes the terminal only — execution history is preserved.
+  const clearTerminal = () => {
+    cancelRef.current++;
+    queueRef.current = [];
+    doneRef.current = null;
+    abortRef.current?.abort();
+    setProgress(0);
+    reset();
+  };
+
+  /* --------------------------- target history --------------------------- */
+  const onTargetKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (e.key === "Enter") {
+      e.preventDefault();
+      void execute();
+      return;
+    }
+    if (e.key !== "ArrowUp" && e.key !== "ArrowDown") return;
+    if (targetHistory.length === 0) return;
+    e.preventDefault();
+    const next =
+      e.key === "ArrowUp"
+        ? Math.min(histIndex + 1, targetHistory.length - 1)
+        : histIndex - 1;
+    setHistIndex(next);
+    setTarget(next < 0 ? "" : targetHistory[next]);
+  };
+
+  /* -------------------------------- export ------------------------------ */
+  const exportLog = (ext: "log" | "txt") => {
     const lines = output
-      .map((o) => {
-        const ts = new Date(o.ts).toISOString();
-        return `[${ts}] [${o.level.toUpperCase()}] ${o.line}`;
-      })
+      .map(
+        (o) =>
+          `[${new Date(o.ts).toISOString()}] [${o.level.toUpperCase()}] ${o.line}`,
+      )
       .join("\n");
     const header = [
       `# Reaper execution log`,
@@ -179,7 +323,7 @@ function TerminalPage() {
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;
-    a.download = `reaper-${payload}-${Date.now()}.log`;
+    a.download = `reaper-${payload}-${Date.now()}.${ext}`;
     a.click();
     URL.revokeObjectURL(url);
   };
@@ -199,49 +343,67 @@ function TerminalPage() {
     }
   }, [status]);
 
+  const scrollActive = !scrollLocked && autoScroll;
+  // Progress reflects what the operator can actually see: lines already typed
+  // out versus the module's total step count (server pct is the upper bound).
+  const totalSteps = PAYLOAD_MAP[payload]?.steps.length ?? 0;
+  const shown = totalSteps
+    ? Math.round((Math.min(output.length, totalSteps) / totalSteps) * 100)
+    : progress;
+  const pct = isExecuting ? Math.min(shown, progress || shown) : shown;
+  const barWidth = 18;
+  const filled = Math.round((Math.min(100, Math.max(0, pct)) / 100) * barWidth);
+  const progressBar = `[${"█".repeat(filled)}${"░".repeat(barWidth - filled)}] ${String(pct).padStart(3)}%`;
+
+
   return (
     <div className="relative min-h-screen">
       <div className="pointer-events-none absolute inset-0 grid-bg opacity-40" />
-      <div className="relative mx-auto flex min-h-screen max-w-[1600px] flex-col gap-5 px-4 py-5 sm:px-6 lg:px-8">
-        {/* Header */}
-        <header className="panel flex flex-wrap items-center gap-4 px-4 py-3 sm:px-5">
-          <Link
-            to="/"
-            className="inline-flex items-center gap-2 rounded-md border border-border/60 bg-[color:var(--surface-2)] px-2.5 py-1.5 font-mono text-[11px] uppercase tracking-widest text-muted-foreground transition hover:text-foreground"
-          >
-            <ChevronLeft className="h-3.5 w-3.5" />
-            Dashboard
-          </Link>
-          <div className="flex items-center gap-3">
-            <div className="grid h-9 w-9 place-items-center rounded-md border border-[color:var(--cyan)]/40 bg-[color:var(--surface-2)] glow-cyan">
-              <TermIcon className="h-4 w-4 text-[color:var(--cyan)]" />
-            </div>
-            <div>
-              <div className="font-mono text-sm font-semibold tracking-[0.3em]">
-                EXEC TERMINAL
+      <div className="relative mx-auto flex min-h-screen max-w-[1600px] flex-col gap-4 px-3 py-4 sm:px-6 sm:py-5 lg:px-8">
+        {!minimal && (
+          <header className="panel hover-glow flex flex-wrap items-center gap-4 px-4 py-3 sm:px-5">
+            <Link
+              to="/"
+              className="hover-glow inline-flex items-center gap-2 rounded-md border border-border/60 bg-[color:var(--surface-2)] px-2.5 py-1.5 font-mono text-[11px] uppercase tracking-widest text-muted-foreground transition hover:text-foreground"
+            >
+              <ChevronLeft className="h-3.5 w-3.5" />
+              Dashboard
+            </Link>
+            <div className="flex items-center gap-3">
+              <div className="grid h-9 w-9 place-items-center rounded-md border border-[color:var(--cyan)]/40 bg-[color:var(--surface-2)] glow-cyan">
+                <TermIcon className="h-4 w-4 text-[color:var(--cyan)]" />
               </div>
-              <div className="font-mono text-[10px] uppercase tracking-widest text-muted-foreground">
-                Reaper Payload Runtime
+              <div>
+                <div className="font-mono text-sm font-semibold tracking-[0.3em]">
+                  EXEC TERMINAL
+                </div>
+                <div className="font-mono text-[10px] uppercase tracking-widest text-muted-foreground">
+                  Reaper Payload Runtime
+                </div>
               </div>
             </div>
-          </div>
-          <div className="ml-auto flex items-center gap-2">
-            <StatusPill label={statusInfo.label} color={statusInfo.color} />
-          </div>
-        </header>
+            <div className="ml-auto flex items-center gap-2">
+              <StatusPill label={statusInfo.label} color={statusInfo.color} />
+            </div>
+          </header>
+        )}
 
         {/* Control bar */}
-        <section className="panel grid grid-cols-1 gap-3 p-4 md:grid-cols-[minmax(0,1fr)_260px_auto]">
+        <section className="panel grid grid-cols-1 gap-3 p-3 sm:p-4 md:grid-cols-[minmax(0,1fr)_260px_auto]">
           <label className="flex flex-col gap-1.5">
             <span className="font-mono text-[10px] uppercase tracking-widest text-muted-foreground">
-              Target
+              Target · press ↑/↓ to recall
             </span>
             <input
               value={target}
-              onChange={(e) => setTarget(e.target.value)}
+              onChange={(e) => {
+                setTarget(e.target.value);
+                setHistIndex(-1);
+              }}
+              onKeyDown={onTargetKeyDown}
               placeholder="host.example.com or 10.0.0.4"
               disabled={isExecuting}
-              className="w-full rounded-md border border-border/60 bg-[color:var(--surface-2)] px-3 py-2 font-mono text-sm text-foreground placeholder:text-muted-foreground/60 focus:border-[color:var(--cyan)]/60 focus:outline-none disabled:opacity-60"
+              className="hover-glow w-full rounded-md border border-border/60 bg-[color:var(--surface-2)] px-3 py-2 font-mono text-sm text-foreground placeholder:text-muted-foreground/60 focus:border-[color:var(--cyan)]/60 focus:outline-none disabled:opacity-60"
             />
           </label>
           <label className="flex flex-col gap-1.5">
@@ -252,7 +414,7 @@ function TerminalPage() {
               value={payload}
               onChange={(e) => setPayload(e.target.value)}
               disabled={isExecuting}
-              className="w-full rounded-md border border-border/60 bg-[color:var(--surface-2)] px-3 py-2 font-mono text-sm text-foreground focus:border-[color:var(--cyan)]/60 focus:outline-none disabled:opacity-60"
+              className="hover-glow w-full rounded-md border border-border/60 bg-[color:var(--surface-2)] px-3 py-2 font-mono text-sm text-foreground focus:border-[color:var(--cyan)]/60 focus:outline-none disabled:opacity-60"
             >
               {PAYLOADS.map((p) => (
                 <option key={p.id} value={p.id}>
@@ -261,11 +423,11 @@ function TerminalPage() {
               ))}
             </select>
           </label>
-          <div className="flex items-end gap-2">
+          <div className="flex flex-wrap items-end gap-2">
             <button
               onClick={execute}
               disabled={isExecuting || !target.trim()}
-              className="inline-flex items-center gap-2 rounded-md border border-[color:var(--neon)]/50 bg-[color:var(--neon)]/10 px-4 py-2 font-mono text-xs font-semibold uppercase tracking-widest text-[color:var(--neon)] glow-neon transition hover:bg-[color:var(--neon)]/20 disabled:opacity-40 disabled:cursor-not-allowed"
+              className="inline-flex items-center gap-2 rounded-md border border-[color:var(--neon)]/50 bg-[color:var(--neon)]/10 px-4 py-2 font-mono text-xs font-semibold uppercase tracking-widest text-[color:var(--neon)] glow-neon transition hover:bg-[color:var(--neon)]/20 disabled:cursor-not-allowed disabled:opacity-40"
             >
               {isExecuting ? (
                 <>
@@ -282,7 +444,7 @@ function TerminalPage() {
             <button
               onClick={stop}
               disabled={!isExecuting}
-              className="inline-flex items-center gap-2 rounded-md border border-[color:var(--danger)]/50 bg-[color:var(--danger)]/10 px-3 py-2 font-mono text-xs font-semibold uppercase tracking-widest text-[color:var(--danger)] transition hover:bg-[color:var(--danger)]/20 disabled:opacity-30 disabled:cursor-not-allowed"
+              className="inline-flex items-center gap-2 rounded-md border border-[color:var(--danger)]/50 bg-[color:var(--danger)]/10 px-3 py-2 font-mono text-xs font-semibold uppercase tracking-widest text-[color:var(--danger)] transition hover:bg-[color:var(--danger)]/20 disabled:cursor-not-allowed disabled:opacity-30"
             >
               <Square className="h-3.5 w-3.5" />
               Stop
@@ -291,10 +453,17 @@ function TerminalPage() {
         </section>
 
         {/* Terminal + History */}
-        <section className="grid grid-cols-1 gap-4 lg:grid-cols-[minmax(0,2fr)_minmax(280px,1fr)]">
-          {/* Terminal */}
-          <div className="panel flex min-h-[520px] flex-col overflow-hidden">
-            <div className="flex items-center justify-between border-b border-border/50 px-4 py-2">
+        <section
+          className={
+            minimal
+              ? "grid grid-cols-1 gap-4"
+              : "grid grid-cols-1 gap-4 lg:grid-cols-[minmax(0,2fr)_minmax(280px,1fr)]"
+          }
+        >
+          <div
+            className={`panel flex flex-col overflow-hidden ${minimal ? "min-h-[82vh]" : "min-h-[520px]"}`}
+          >
+            <div className="flex flex-wrap items-center justify-between gap-2 border-b border-border/50 px-4 py-2">
               <div className="flex items-center gap-2">
                 <span className="h-2 w-2 rounded-full bg-[color:var(--danger)]/70" />
                 <span className="h-2 w-2 rounded-full bg-[color:var(--warn)]/70" />
@@ -303,21 +472,55 @@ function TerminalPage() {
                   /dev/reaper/pty
                 </span>
               </div>
-              <div className="flex items-center gap-1.5">
+              <div className="flex flex-wrap items-center gap-1.5">
+                <IconBtn
+                  label={scrollLocked ? "Unlock auto-scroll" : "Lock auto-scroll"}
+                  active={scrollLocked}
+                  onClick={() => setScrollLocked((v) => !v)}
+                >
+                  {scrollLocked ? (
+                    <Lock className="h-3.5 w-3.5" />
+                  ) : (
+                    <Unlock className="h-3.5 w-3.5" />
+                  )}
+                </IconBtn>
+                <IconBtn
+                  label={soundEnabled ? "Mute typing sound" : "Enable typing sound"}
+                  active={soundEnabled}
+                  onClick={toggleSound}
+                >
+                  {soundEnabled ? (
+                    <Volume2 className="h-3.5 w-3.5" />
+                  ) : (
+                    <VolumeX className="h-3.5 w-3.5" />
+                  )}
+                </IconBtn>
+                <IconBtn
+                  label={minimal ? "Exit minimal mode" : "Minimal mode"}
+                  active={minimal}
+                  onClick={() => setMinimal((v) => !v)}
+                >
+                  {minimal ? (
+                    <Minimize2 className="h-3.5 w-3.5" />
+                  ) : (
+                    <Maximize2 className="h-3.5 w-3.5" />
+                  )}
+                </IconBtn>
                 <IconBtn
                   label="Export .log"
-                  onClick={exportLog}
+                  onClick={() => exportLog("log")}
                   disabled={output.length === 0}
                 >
                   <Download className="h-3.5 w-3.5" />
                 </IconBtn>
                 <IconBtn
-                  label="Clear terminal & history"
-                  onClick={() => {
-                    abortRef.current?.abort();
-                    clearAll();
-                  }}
+                  label="Export .txt"
+                  onClick={() => exportLog("txt")}
+                  disabled={output.length === 0}
                 >
+                  <FileText className="h-3.5 w-3.5" />
+                </IconBtn>
+                <IconBtn label="Clear terminal (keep history)" onClick={clearTerminal}>
                   <Trash2 className="h-3.5 w-3.5" />
                 </IconBtn>
               </div>
@@ -333,9 +536,9 @@ function TerminalPage() {
                 </div>
               ) : (
                 output.map((o) => (
-                  <div key={o.id} className={levelClass(o.level)}>
+                  <div key={o.id} className={`term-line ${levelClass(o.level)}`}>
                     <span className="text-muted-foreground/50">
-                      {formatTime(o.ts)}{" "}
+                      [{formatTime(o.ts)}]{" "}
                     </span>
                     {o.line}
                   </div>
@@ -346,17 +549,27 @@ function TerminalPage() {
               )}
             </div>
             <div className="flex flex-col gap-1 border-t border-border/50 px-4 py-2 font-mono text-[10px] uppercase tracking-widest text-muted-foreground">
-              <div className="flex items-center gap-2">
+              <div className="flex flex-wrap items-center gap-2">
                 <span>module</span>
                 <span className="truncate text-[color:var(--cyan)]">{payload}</span>
+                <span className="ml-1">·</span>
+                <span
+                  className={
+                    isExecuting ? "text-foreground" : "text-muted-foreground"
+                  }
+                >
+                  {isExecuting ? "running" : "idle"}
+                </span>
+                <span className="ml-2 hidden text-[color:var(--neon)] sm:inline">
+                  {progressBar}
+                </span>
                 {isExecuting && (
-                  <>
-                    <span className="ml-1">·</span>
-                    <span className="text-foreground">running</span>
-                    <span className="relative ml-1 h-1 flex-1 overflow-hidden rounded bg-[color:var(--surface-2)]">
-                      <span className="absolute inset-y-0 left-0 w-1/3 animate-[scan_1.2s_linear_infinite] bg-[color:var(--cyan)]/70" />
-                    </span>
-                  </>
+                  <span className="relative ml-1 h-1 flex-1 overflow-hidden rounded bg-[color:var(--surface-2)]">
+                    <span
+                      className="absolute inset-y-0 left-0 bg-[color:var(--cyan)]/80 transition-[width] duration-300"
+                      style={{ width: `${pct}%` }}
+                    />
+                  </span>
                 )}
               </div>
               <div className="flex flex-wrap items-center justify-between gap-2">
@@ -366,84 +579,108 @@ function TerminalPage() {
                 <span>
                   autoscroll{" "}
                   <span className="text-foreground">
-                    {autoScroll ? "on" : "paused"}
+                    {scrollLocked ? "locked" : scrollActive ? "on" : "paused"}
+                  </span>
+                </span>
+                <span>
+                  sound{" "}
+                  <span className="text-foreground">
+                    {soundEnabled ? "on" : "off"}
                   </span>
                 </span>
                 <span>
                   state{" "}
-                  <span style={{ color: statusInfo.color }}>{statusInfo.label}</span>
+                  <span style={{ color: statusInfo.color }}>
+                    {statusInfo.label}
+                  </span>
                 </span>
               </div>
             </div>
           </div>
 
           {/* History */}
-          <div className="panel flex min-h-[520px] flex-col overflow-hidden">
-            <div className="flex items-center justify-between border-b border-border/50 px-4 py-2.5">
-              <div className="flex items-center gap-2">
-                <HistoryIcon className="h-4 w-4 text-[color:var(--gold)]" />
-                <span className="font-mono text-[11px] uppercase tracking-widest">
-                  History
-                </span>
-              </div>
-              <span className="font-mono text-[10px] uppercase tracking-widest text-muted-foreground">
-                last {history.length}/10
-              </span>
-            </div>
-            <div className="flex-1 overflow-y-auto p-3">
-              {!mounted ? null : history.length === 0 ? (
-                <div className="p-3 font-mono text-xs text-muted-foreground/60">
-                  no executions yet.
+          {!minimal && (
+            <div className="panel flex min-h-[520px] flex-col overflow-hidden">
+              <div className="flex items-center justify-between border-b border-border/50 px-4 py-2.5">
+                <div className="flex items-center gap-2">
+                  <HistoryIcon className="h-4 w-4 text-[color:var(--gold)]" />
+                  <span className="font-mono text-[11px] uppercase tracking-widest">
+                    History
+                  </span>
                 </div>
-              ) : (
-                <ul className="flex flex-col gap-2">
-                  {history.map((h) => (
-                    <li
-                      key={h.id}
-                      className="rounded-md border border-border/50 bg-[color:var(--surface-2)]/60 px-3 py-2"
-                    >
-                      <div className="flex items-center justify-between gap-2">
-                        <span
-                          className="font-mono text-[10px] uppercase tracking-widest"
-                          style={{ color: outcomeColor(h.outcome) }}
-                        >
-                          {h.outcome}
-                        </span>
-                        <span className="font-mono text-[10px] text-muted-foreground">
-                          {new Date(h.finishedAt).toLocaleTimeString()}
-                        </span>
-                      </div>
-                      <div className="mt-1 truncate font-mono text-[12px] text-foreground">
-                        {h.target}
-                      </div>
-                      <div className="mt-0.5 flex items-center justify-between gap-2 font-mono text-[10px] text-muted-foreground">
-                        <span>{h.payload}</span>
-                        <span>
-                          {h.lineCount} ln ·{" "}
-                          {Math.max(
-                            1,
-                            Math.round((h.finishedAt - h.startedAt) / 1000),
-                          )}
-                          s
-                        </span>
-                      </div>
-                    </li>
-                  ))}
-                </ul>
-              )}
+                <div className="flex items-center gap-2">
+                  <span className="font-mono text-[10px] uppercase tracking-widest text-muted-foreground">
+                    last {history.length}/10
+                  </span>
+                  <IconBtn
+                    label="Clear history"
+                    onClick={clearHistory}
+                    disabled={history.length === 0}
+                  >
+                    <Trash2 className="h-3.5 w-3.5" />
+                  </IconBtn>
+                </div>
+              </div>
+              <div className="flex-1 overflow-y-auto p-3">
+                {!mounted ? null : history.length === 0 ? (
+                  <div className="p-3 font-mono text-xs text-muted-foreground/60">
+                    no executions yet.
+                  </div>
+                ) : (
+                  <ul className="flex flex-col gap-2">
+                    {history.map((h) => (
+                      <li
+                        key={h.id}
+                        className="hover-glow rounded-md border border-border/50 bg-[color:var(--surface-2)]/60 px-3 py-2 transition"
+                      >
+                        <div className="flex items-center justify-between gap-2">
+                          <span
+                            className="font-mono text-[10px] uppercase tracking-widest"
+                            style={{ color: outcomeColor(h.outcome) }}
+                          >
+                            {h.outcome}
+                          </span>
+                          <span className="font-mono text-[10px] text-muted-foreground">
+                            {new Date(h.finishedAt).toLocaleTimeString()}
+                          </span>
+                        </div>
+                        <div className="mt-1 truncate font-mono text-[12px] text-foreground">
+                          {h.target}
+                        </div>
+                        <div className="mt-0.5 flex items-center justify-between gap-2 font-mono text-[10px] text-muted-foreground">
+                          <span>{h.payload}</span>
+                          <span>
+                            {h.lineCount} ln ·{" "}
+                            {Math.max(
+                              1,
+                              Math.round((h.finishedAt - h.startedAt) / 1000),
+                            )}
+                            s
+                          </span>
+                        </div>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </div>
             </div>
-          </div>
+          )}
         </section>
 
-        <footer className="flex flex-wrap items-center justify-between gap-2 pb-4 pt-2 font-mono text-[10px] uppercase tracking-widest text-muted-foreground">
-          <span>REAPER // EXEC v1.0 · SSE STREAM</span>
-          <button
-            onClick={reset}
-            className="rounded border border-border/50 px-2 py-1 hover:text-foreground"
-          >
-            reset terminal
-          </button>
-        </footer>
+        {!minimal && (
+          <footer className="flex flex-wrap items-center justify-between gap-2 pb-4 pt-2 font-mono text-[10px] uppercase tracking-widest text-muted-foreground">
+            <span>REAPER // EXEC v1.0 · SSE STREAM</span>
+            <button
+              onClick={() => {
+                clearHistory();
+                clearTerminal();
+              }}
+              className="hover-glow rounded border border-border/50 px-2 py-1 transition hover:text-foreground"
+            >
+              reset all
+            </button>
+          </footer>
+        )}
       </div>
     </div>
   );
@@ -469,11 +706,13 @@ function IconBtn({
   label,
   onClick,
   disabled,
+  active,
 }: {
   children: React.ReactNode;
   label: string;
   onClick: () => void;
   disabled?: boolean;
+  active?: boolean;
 }) {
   return (
     <button
@@ -481,7 +720,11 @@ function IconBtn({
       aria-label={label}
       title={label}
       disabled={disabled}
-      className="inline-flex h-7 w-7 items-center justify-center rounded border border-border/60 text-muted-foreground transition hover:border-[color:var(--cyan)]/60 hover:text-[color:var(--cyan)] disabled:opacity-30 disabled:cursor-not-allowed"
+      className={`inline-flex h-7 w-7 items-center justify-center rounded border transition disabled:cursor-not-allowed disabled:opacity-30 ${
+        active
+          ? "border-[color:var(--cyan)]/70 text-[color:var(--cyan)] glow-cyan"
+          : "border-border/60 text-muted-foreground hover:border-[color:var(--cyan)]/60 hover:text-[color:var(--cyan)] hover:shadow-[0_0_12px_-2px_color-mix(in_oklab,var(--cyan)_60%,transparent)]"
+      }`}
     >
       {children}
     </button>
