@@ -29,10 +29,17 @@ type State = {
   currentExecId: string | null;
   startedAt: number | null;
   history: HistoryEntry[];
+  targetHistory: string[];
+  soundEnabled: boolean;
   setTarget: (t: string) => void;
   setPayload: (p: string) => void;
   appendLine: (line: string, level: OutputLevel) => void;
+  beginLine: (level: OutputLevel) => void;
+  growLine: (chars: string) => void;
+  pushTargetHistory: (t: string) => void;
+  toggleSound: () => void;
   reset: () => void;
+  clearHistory: () => void;
   clearAll: () => void;
   beginExecution: (execId: string) => void;
   finishExecution: (outcome: HistoryEntry["outcome"]) => void;
@@ -50,9 +57,17 @@ export const useExecutionStore = create<State>()(
       currentExecId: null,
       startedAt: null,
       history: [],
+      targetHistory: [],
+      soundEnabled: false,
 
       setTarget: (t) => set({ target: t }),
       setPayload: (p) => set({ payload: p }),
+      toggleSound: () => set((s) => ({ soundEnabled: !s.soundEnabled })),
+
+      pushTargetHistory: (t) =>
+        set((s) => ({
+          targetHistory: [t, ...s.targetHistory.filter((x) => x !== t)].slice(0, 20),
+        })),
 
       appendLine: (line, level) =>
         set((s) => ({
@@ -61,6 +76,27 @@ export const useExecutionStore = create<State>()(
             { id: ++lineSeq, line, level, ts: Date.now() },
           ].slice(-2000),
         })),
+
+      // Typewriter support: open an empty line, then grow it character by character.
+      beginLine: (level) =>
+        set((s) => ({
+          output: [
+            ...s.output,
+            { id: ++lineSeq, line: "", level, ts: Date.now() },
+          ].slice(-2000),
+        })),
+
+      growLine: (chars) =>
+        set((s) => {
+          if (s.output.length === 0) return s;
+          const out = s.output.slice();
+          const last = out[out.length - 1];
+          out[out.length - 1] = { ...last, line: last.line + chars };
+          return { output: out };
+        }),
+
+      clearHistory: () => set({ history: [] }),
+
 
       reset: () =>
         set({
