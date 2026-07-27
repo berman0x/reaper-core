@@ -152,7 +152,10 @@ export const useExecutionStore = create<State>()(
         history: s.history,
         target: s.target,
         payload: s.payload,
+        targetHistory: s.targetHistory,
+        soundEnabled: s.soundEnabled,
       }),
+
     },
   ),
 );
