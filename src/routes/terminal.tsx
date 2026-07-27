@@ -449,3 +449,13 @@ function TerminalPage() {
           </div>
         </section>
 
+        {/* Terminal + History */}
+        <section
+          className={
+            minimal
+              ? "grid grid-cols-1 gap-4"
+              : "grid grid-cols-1 gap-4 lg:grid-cols-[minmax(0,2fr)_minmax(280px,1fr)]"
+          }
+        >
+          <div className="panel flex min-h-[520px] flex-col overflow-hidden">
+
