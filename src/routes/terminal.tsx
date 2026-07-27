@@ -352,3 +352,36 @@ function TerminalPage() {
   }, [status]);
 
   const scrollActive = !scrollLocked && autoScroll;
+
+  return (
+    <div className="relative min-h-screen">
+      <div className="pointer-events-none absolute inset-0 grid-bg opacity-40" />
+      <div className="relative mx-auto flex min-h-screen max-w-[1600px] flex-col gap-4 px-3 py-4 sm:px-6 sm:py-5 lg:px-8">
+        {!minimal && (
+          <header className="panel hover-glow flex flex-wrap items-center gap-4 px-4 py-3 sm:px-5">
+            <Link
+              to="/"
+              className="hover-glow inline-flex items-center gap-2 rounded-md border border-border/60 bg-[color:var(--surface-2)] px-2.5 py-1.5 font-mono text-[11px] uppercase tracking-widest text-muted-foreground transition hover:text-foreground"
+            >
+              <ChevronLeft className="h-3.5 w-3.5" />
+              Dashboard
+            </Link>
+            <div className="flex items-center gap-3">
+              <div className="grid h-9 w-9 place-items-center rounded-md border border-[color:var(--cyan)]/40 bg-[color:var(--surface-2)] glow-cyan">
+                <TermIcon className="h-4 w-4 text-[color:var(--cyan)]" />
+              </div>
+              <div>
+                <div className="font-mono text-sm font-semibold tracking-[0.3em]">
+                  EXEC TERMINAL
+                </div>
+                <div className="font-mono text-[10px] uppercase tracking-widest text-muted-foreground">
+                  Reaper Payload Runtime
+                </div>
+              </div>
+            </div>
+            <div className="ml-auto flex items-center gap-2">
+              <StatusPill label={statusInfo.label} color={statusInfo.color} />
+            </div>
+          </header>
+        )}
+
