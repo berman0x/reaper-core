@@ -503,7 +503,7 @@ function TerminalPage() {
                 <IconBtn
                   label={minimal ? "Exit minimal mode" : "Minimal mode"}
                   active={minimal}
-                  onClick={() => setMinimal((v) => !v)}
+                  onClick={() => setMinimal(!minimal)}
                 >
                   {minimal ? (
                     <Minimize2 className="h-3.5 w-3.5" />
