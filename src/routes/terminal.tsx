@@ -54,6 +54,10 @@ function TerminalPage() {
     history,
     targetHistory,
     soundEnabled,
+    minimalMode,
+    autoScrollPref,
+    setMinimalMode,
+    setAutoScrollPref,
     setTarget,
     setPayload,
     appendLine,
@@ -69,10 +73,11 @@ function TerminalPage() {
 
   const abortRef = useRef<AbortController | null>(null);
   const termRef = useRef<HTMLDivElement | null>(null);
-  const [autoScroll, setAutoScroll] = useState(true);
+  const [autoScroll, setAutoScroll] = useState(autoScrollPref);
   const [scrollLocked, setScrollLocked] = useState(false);
   const [mounted, setMounted] = useState(false);
-  const [minimal, setMinimal] = useState(false);
+  const minimal = minimalMode;
+  const setMinimal = setMinimalMode;
   const [progress, setProgress] = useState(0);
   const [histIndex, setHistIndex] = useState(-1);
 
@@ -170,6 +175,7 @@ function TerminalPage() {
     if (!el) return;
     const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 40;
     setAutoScroll(atBottom);
+    setAutoScrollPref(atBottom);
   };
 
   useEffect(() => () => abortRef.current?.abort(), []);
@@ -498,7 +504,7 @@ function TerminalPage() {
                 <IconBtn
                   label={minimal ? "Exit minimal mode" : "Minimal mode"}
                   active={minimal}
-                  onClick={() => setMinimal((v) => !v)}
+                  onClick={() => setMinimal(!minimal)}
                 >
                   {minimal ? (
                     <Minimize2 className="h-3.5 w-3.5" />

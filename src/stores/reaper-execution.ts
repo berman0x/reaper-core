@@ -31,6 +31,10 @@ type State = {
   history: HistoryEntry[];
   targetHistory: string[];
   soundEnabled: boolean;
+  minimalMode: boolean;
+  autoScrollPref: boolean;
+  setMinimalMode: (v: boolean) => void;
+  setAutoScrollPref: (v: boolean) => void;
   setTarget: (t: string) => void;
   setPayload: (p: string) => void;
   appendLine: (line: string, level: OutputLevel) => void;
@@ -59,10 +63,14 @@ export const useExecutionStore = create<State>()(
       history: [],
       targetHistory: [],
       soundEnabled: false,
+      minimalMode: false,
+      autoScrollPref: true,
 
       setTarget: (t) => set({ target: t }),
       setPayload: (p) => set({ payload: p }),
       toggleSound: () => set((s) => ({ soundEnabled: !s.soundEnabled })),
+      setMinimalMode: (v) => set({ minimalMode: v }),
+      setAutoScrollPref: (v) => set({ autoScrollPref: v }),
 
       pushTargetHistory: (t) =>
         set((s) => ({
@@ -154,6 +162,8 @@ export const useExecutionStore = create<State>()(
         payload: s.payload,
         targetHistory: s.targetHistory,
         soundEnabled: s.soundEnabled,
+        minimalMode: s.minimalMode,
+        autoScrollPref: s.autoScrollPref,
       }),
 
     },

@@ -10,12 +10,18 @@
 
 import { Route as rootRouteImport } from './routes/__root'
 import { Route as TerminalRouteImport } from './routes/terminal'
+import { Route as MonitorRouteImport } from './routes/monitor'
 import { Route as IndexRouteImport } from './routes/index'
 import { Route as ApiExecuteRouteImport } from './routes/api/execute'
 
 const TerminalRoute = TerminalRouteImport.update({
   id: '/terminal',
   path: '/terminal',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const MonitorRoute = MonitorRouteImport.update({
+  id: '/monitor',
+  path: '/monitor',
   getParentRoute: () => rootRouteImport,
 } as any)
 const IndexRoute = IndexRouteImport.update({
@@ -31,30 +37,34 @@ const ApiExecuteRoute = ApiExecuteRouteImport.update({
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
+  '/monitor': typeof MonitorRoute
   '/terminal': typeof TerminalRoute
   '/api/execute': typeof ApiExecuteRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
+  '/monitor': typeof MonitorRoute
   '/terminal': typeof TerminalRoute
   '/api/execute': typeof ApiExecuteRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/': typeof IndexRoute
+  '/monitor': typeof MonitorRoute
   '/terminal': typeof TerminalRoute
   '/api/execute': typeof ApiExecuteRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
-  fullPaths: '/' | '/terminal' | '/api/execute'
+  fullPaths: '/' | '/monitor' | '/terminal' | '/api/execute'
   fileRoutesByTo: FileRoutesByTo
-  to: '/' | '/terminal' | '/api/execute'
-  id: '__root__' | '/' | '/terminal' | '/api/execute'
+  to: '/' | '/monitor' | '/terminal' | '/api/execute'
+  id: '__root__' | '/' | '/monitor' | '/terminal' | '/api/execute'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
+  MonitorRoute: typeof MonitorRoute
   TerminalRoute: typeof TerminalRoute
   ApiExecuteRoute: typeof ApiExecuteRoute
 }
@@ -66,6 +76,13 @@ declare module '@tanstack/react-router' {
       path: '/terminal'
       fullPath: '/terminal'
       preLoaderRoute: typeof TerminalRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/monitor': {
+      id: '/monitor'
+      path: '/monitor'
+      fullPath: '/monitor'
+      preLoaderRoute: typeof MonitorRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/': {
@@ -87,6 +104,7 @@ declare module '@tanstack/react-router' {
 
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
+  MonitorRoute: MonitorRoute,
   TerminalRoute: TerminalRoute,
   ApiExecuteRoute: ApiExecuteRoute,
 }
