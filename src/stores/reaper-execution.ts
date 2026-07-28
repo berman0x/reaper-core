@@ -162,6 +162,8 @@ export const useExecutionStore = create<State>()(
         payload: s.payload,
         targetHistory: s.targetHistory,
         soundEnabled: s.soundEnabled,
+        minimalMode: s.minimalMode,
+        autoScrollPref: s.autoScrollPref,
       }),
 
     },
