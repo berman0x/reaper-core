@@ -175,6 +175,7 @@ function TerminalPage() {
     if (!el) return;
     const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 40;
     setAutoScroll(atBottom);
+    setAutoScrollPref(atBottom);
   };
 
   useEffect(() => () => abortRef.current?.abort(), []);
