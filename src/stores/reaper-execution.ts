@@ -63,10 +63,14 @@ export const useExecutionStore = create<State>()(
       history: [],
       targetHistory: [],
       soundEnabled: false,
+      minimalMode: false,
+      autoScrollPref: true,
 
       setTarget: (t) => set({ target: t }),
       setPayload: (p) => set({ payload: p }),
       toggleSound: () => set((s) => ({ soundEnabled: !s.soundEnabled })),
+      setMinimalMode: (v) => set({ minimalMode: v }),
+      setAutoScrollPref: (v) => set({ autoScrollPref: v }),
 
       pushTargetHistory: (t) =>
         set((s) => ({
