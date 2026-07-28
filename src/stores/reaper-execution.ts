@@ -31,6 +31,10 @@ type State = {
   history: HistoryEntry[];
   targetHistory: string[];
   soundEnabled: boolean;
+  minimalMode: boolean;
+  autoScrollPref: boolean;
+  setMinimalMode: (v: boolean) => void;
+  setAutoScrollPref: (v: boolean) => void;
   setTarget: (t: string) => void;
   setPayload: (p: string) => void;
   appendLine: (line: string, level: OutputLevel) => void;
