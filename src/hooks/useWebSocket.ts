@@ -3,12 +3,10 @@ import { useCallback, useEffect, useRef, useState } from "react";
 /**
  * Generic streaming WebSocket hook for the Reaper monitor dashboard.
  *
- * Features:
- *  - Reads VITE_WS_URL, falls back to ws://localhost:3000
- *  - Auto-reconnect with exponential backoff (capped)
- *  - Outbound message queue while disconnected
- *  - Parses incoming JSON events: job_started, output, done, error
- *  - Maintains a rolling `lines` buffer and an `activeJobs` count
+ * Adds per-module status tracking on top of the raw line stream:
+ *  - moduleStates: Record<moduleId, { status, progress, lastLine, durationMs, jobId }>
+ *  - awaitJob(jobId): Promise that resolves when the job completes (or errors)
+ *  - resetModules(): clear per-module state (e.g. before an auto-chain run)
  */
 
 export type WSStatus = "connecting" | "open" | "closed" | "error";
@@ -24,11 +22,25 @@ export type TerminalLine = {
   ts: number;
 };
 
+export type ModuleRunStatus = "idle" | "waiting" | "running" | "success" | "error";
+
+export type ModuleState = {
+  status: ModuleRunStatus;
+  progress: number; // 0..100
+  lastLine: string;
+  startedAt?: number;
+  endedAt?: number;
+  durationMs?: number;
+  jobId?: string;
+  target?: string;
+  lineCount: number;
+};
+
 type InboundEvent =
   | { type: "job_started"; jobId: string; module?: string; target?: string }
-  | { type: "output"; jobId?: string; line: string; level?: TerminalLineLevel }
-  | { type: "done"; jobId: string; status?: "success" | "error" | "stopped" }
-  | { type: "error"; jobId?: string; message: string };
+  | { type: "output"; jobId?: string; module?: string; line: string; level?: TerminalLineLevel; progress?: number }
+  | { type: "done"; jobId: string; module?: string; status?: "success" | "error" | "stopped" }
+  | { type: "error"; jobId?: string; module?: string; message: string };
 
 type OutboundMessage = Record<string, unknown>;
 
@@ -43,6 +55,13 @@ const DEFAULT_URL =
 
 let lineSeq = 0;
 
+const EMPTY_STATE: ModuleState = {
+  status: "idle",
+  progress: 0,
+  lastLine: "",
+  lineCount: 0,
+};
+
 export function useWebSocket(options: UseWebSocketOptions = {}) {
   const { url = DEFAULT_URL, maxLines = 2000, autoConnect = true } = options;
 
@@ -50,6 +69,7 @@ export function useWebSocket(options: UseWebSocketOptions = {}) {
   const [lines, setLines] = useState<TerminalLine[]>([]);
   const [activeJobs, setActiveJobs] = useState(0);
   const [lastError, setLastError] = useState<string | null>(null);
+  const [moduleStates, setModuleStates] = useState<Record<string, ModuleState>>({});
 
   const wsRef = useRef<WebSocket | null>(null);
   const queueRef = useRef<OutboundMessage[]>([]);
@@ -57,6 +77,15 @@ export function useWebSocket(options: UseWebSocketOptions = {}) {
   const reconnectTimer = useRef<number | null>(null);
   const manualCloseRef = useRef(false);
   const activeJobIds = useRef<Set<string>>(new Set());
+  const jobToModule = useRef<Map<string, string>>(new Map());
+  const jobWaiters = useRef<Map<string, (v: "success" | "error" | "stopped") => void>>(new Map());
+
+  const patchModule = useCallback((moduleId: string, patch: Partial<ModuleState>) => {
+    setModuleStates((prev) => {
+      const current = prev[moduleId] ?? EMPTY_STATE;
+      return { ...prev, [moduleId]: { ...current, ...patch } };
+    });
+  }, []);
 
   const pushLine = useCallback(
     (partial: Omit<TerminalLine, "id" | "ts"> & { ts?: number }) => {
@@ -86,20 +115,49 @@ export function useWebSocket(options: UseWebSocketOptions = {}) {
     }
   }, []);
 
-  const send = useCallback(
-    (msg: OutboundMessage) => {
-      const ws = wsRef.current;
-      if (ws && ws.readyState === WebSocket.OPEN) {
-        try {
-          ws.send(JSON.stringify(msg));
-          return true;
-        } catch (err) {
-          setLastError((err as Error).message);
-          return false;
-        }
+  const send = useCallback((msg: OutboundMessage) => {
+    const ws = wsRef.current;
+    if (ws && ws.readyState === WebSocket.OPEN) {
+      try {
+        ws.send(JSON.stringify(msg));
+        return true;
+      } catch (err) {
+        setLastError((err as Error).message);
+        return false;
       }
-      queueRef.current.push(msg);
-      return false;
+    }
+    queueRef.current.push(msg);
+    return false;
+  }, []);
+
+  const awaitJob = useCallback((jobId: string) => {
+    return new Promise<"success" | "error" | "stopped">((resolve) => {
+      jobWaiters.current.set(jobId, resolve);
+    });
+  }, []);
+
+  const resolveWaiter = (jobId: string, outcome: "success" | "error" | "stopped") => {
+    const w = jobWaiters.current.get(jobId);
+    if (w) {
+      w(outcome);
+      jobWaiters.current.delete(jobId);
+    }
+  };
+
+  const resetModules = useCallback(() => {
+    setModuleStates({});
+    jobToModule.current.clear();
+  }, []);
+
+  const markWaiting = useCallback(
+    (moduleIds: string[], target?: string) => {
+      setModuleStates((prev) => {
+        const next = { ...prev };
+        for (const id of moduleIds) {
+          next[id] = { ...EMPTY_STATE, status: "waiting", target };
+        }
+        return next;
+      });
     },
     [],
   );
@@ -110,6 +168,20 @@ export function useWebSocket(options: UseWebSocketOptions = {}) {
         case "job_started": {
           activeJobIds.current.add(ev.jobId);
           setActiveJobs(activeJobIds.current.size);
+          if (ev.module) {
+            jobToModule.current.set(ev.jobId, ev.module);
+            patchModule(ev.module, {
+              status: "running",
+              progress: 5,
+              startedAt: Date.now(),
+              endedAt: undefined,
+              durationMs: undefined,
+              jobId: ev.jobId,
+              target: ev.target,
+              lastLine: "",
+              lineCount: 0,
+            });
+          }
           pushLine({
             jobId: ev.jobId,
             module: ev.module,
@@ -119,8 +191,30 @@ export function useWebSocket(options: UseWebSocketOptions = {}) {
           break;
         }
         case "output": {
+          const moduleId = ev.module ?? (ev.jobId ? jobToModule.current.get(ev.jobId) : undefined);
+          if (moduleId) {
+            setModuleStates((prev) => {
+              const current = prev[moduleId] ?? EMPTY_STATE;
+              const nextCount = current.lineCount + 1;
+              const nextProgress =
+                typeof ev.progress === "number"
+                  ? Math.max(0, Math.min(100, ev.progress))
+                  : Math.min(95, 10 + nextCount * 4);
+              return {
+                ...prev,
+                [moduleId]: {
+                  ...current,
+                  status: "running",
+                  progress: nextProgress,
+                  lastLine: ev.line,
+                  lineCount: nextCount,
+                },
+              };
+            });
+          }
           pushLine({
             jobId: ev.jobId,
+            module: moduleId,
             level: ev.level ?? "output",
             text: ev.line,
           });
@@ -130,10 +224,30 @@ export function useWebSocket(options: UseWebSocketOptions = {}) {
           if (activeJobIds.current.delete(ev.jobId)) {
             setActiveJobs(activeJobIds.current.size);
           }
+          const moduleId = ev.module ?? jobToModule.current.get(ev.jobId);
+          const outcome = ev.status ?? "success";
+          if (moduleId) {
+            setModuleStates((prev) => {
+              const current = prev[moduleId] ?? EMPTY_STATE;
+              const endedAt = Date.now();
+              return {
+                ...prev,
+                [moduleId]: {
+                  ...current,
+                  status: outcome === "error" ? "error" : "success",
+                  progress: 100,
+                  endedAt,
+                  durationMs: current.startedAt ? endedAt - current.startedAt : undefined,
+                },
+              };
+            });
+          }
+          resolveWaiter(ev.jobId, outcome);
           pushLine({
             jobId: ev.jobId,
-            level: ev.status === "error" ? "error" : "success",
-            text: `■ job ${ev.jobId} ${ev.status ?? "done"}`,
+            module: moduleId,
+            level: outcome === "error" ? "error" : "success",
+            text: `■ job ${ev.jobId} ${outcome}`,
           });
           break;
         }
@@ -141,9 +255,19 @@ export function useWebSocket(options: UseWebSocketOptions = {}) {
           if (ev.jobId && activeJobIds.current.delete(ev.jobId)) {
             setActiveJobs(activeJobIds.current.size);
           }
+          const moduleId = ev.module ?? (ev.jobId ? jobToModule.current.get(ev.jobId) : undefined);
+          if (moduleId) {
+            patchModule(moduleId, {
+              status: "error",
+              lastLine: ev.message,
+              endedAt: Date.now(),
+            });
+          }
+          if (ev.jobId) resolveWaiter(ev.jobId, "error");
           setLastError(ev.message);
           pushLine({
             jobId: ev.jobId,
+            module: moduleId,
             level: "error",
             text: `✗ ${ev.message}`,
           });
@@ -151,7 +275,7 @@ export function useWebSocket(options: UseWebSocketOptions = {}) {
         }
       }
     },
-    [pushLine],
+    [patchModule, pushLine],
   );
 
   const scheduleReconnect = useCallback(() => {
@@ -162,6 +286,7 @@ export function useWebSocket(options: UseWebSocketOptions = {}) {
     reconnectTimer.current = window.setTimeout(() => {
       connect();
     }, delay);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const connect = useCallback(() => {
@@ -204,7 +329,6 @@ export function useWebSocket(options: UseWebSocketOptions = {}) {
 
     ws.onclose = () => {
       setStatus("closed");
-      // Any jobs that were in-flight are effectively lost
       if (activeJobIds.current.size > 0) {
         activeJobIds.current.clear();
         setActiveJobs(0);
@@ -244,9 +368,13 @@ export function useWebSocket(options: UseWebSocketOptions = {}) {
     activeJobs,
     lastError,
     url,
+    moduleStates,
     send,
     connect,
     disconnect,
     clearLines,
+    awaitJob,
+    resetModules,
+    markWaiting,
   };
 }
