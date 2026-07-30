@@ -82,4 +82,36 @@ export const MODULES: ModuleConfig[] = [
       { key: "target", label: "Target", placeholder: "example.com", required: true },
     ],
   },
+  {
+    id: "dns-telemetry",
+    module: "dns-telemetry",
+    name: "DNS Telemetry",
+    description: "Read-only DNS record lookup (TXT, AAAA, MX) to verify domain configuration.",
+    category: "network",
+    fields: [
+      { key: "target", label: "Domain", placeholder: "example.com", required: true },
+    ],
+  },
+  {
+    id: "host-posture-check",
+    module: "host-posture-check",
+    name: "Host Posture Check",
+    description: "Inventory OS/patch level, running services, and open ports on hosts you own.",
+    category: "posture",
+    fields: [
+      { key: "target", label: "Host", placeholder: "host.internal", required: true },
+      { key: "port", label: "SSH Port", placeholder: "22", type: "number" },
+    ],
+  },
+  {
+    id: "ssh-key-inventory",
+    module: "ssh-key-inventory",
+    name: "SSH Key Inventory",
+    description: "Enumerate authorized_keys on your own hosts and flag weak or duplicated keys.",
+    category: "posture",
+    fields: [
+      { key: "target", label: "Host", placeholder: "host.internal", required: true },
+      { key: "port", label: "SSH Port", placeholder: "22", type: "number" },
+    ],
+  },
 ];
