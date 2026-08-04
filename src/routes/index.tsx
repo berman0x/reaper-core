@@ -1,982 +1,546 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
-  XAxis,
-  YAxis,
-  CartesianGrid,
-  Tooltip,
-  ResponsiveContainer,
-  Area,
-  AreaChart,
-} from "recharts";
-import {
-  Bell,
-  CircleDot,
-  Cpu,
-  Download,
+  Activity,
+  BarChart3,
+  Boxes,
+  Database,
+  FileText,
   Gauge,
-  Moon,
+  Layers,
+  LayoutDashboard,
   Radio,
-  ShieldCheck,
-  Signal,
-  Sun,
-  Timer,
-  TerminalSquare,
-  WifiOff,
-  X,
+  Settings as SettingsIcon,
+  Shield,
+  Terminal as TerminalIcon,
+  Zap,
 } from "lucide-react";
-import { supabase } from "@/integrations/supabase/client";
+import { MODULES } from "@/config/modules";
+import { useWebSocket, type ModuleState } from "@/hooks/useWebSocket";
 
 export const Route = createFileRoute("/")({
-  component: ReaperDashboard,
+  component: ReaperOpsCenter,
   head: () => ({
     meta: [
-      { title: "Reaper — Live Sensor Network Terminal" },
+      { title: "Reaper // Recon Supply Chain" },
       {
         name: "description",
         content:
-          "Real-time telemetry from the Reaper distributed sensor fleet: live node health, deployment queue, and performance stream.",
+          "Reaper live ops center — orchestrate recon modules as a supply-chain pipeline with real-time WebSocket telemetry.",
       },
-      { property: "og:title", content: "Reaper — Live Sensor Network Terminal" },
+      { property: "og:title", content: "Reaper // Recon Supply Chain" },
       {
         property: "og:description",
-        content:
-          "Real-time telemetry from the Reaper distributed sensor fleet: live node health, deployment queue, and performance stream.",
+        content: "Live pipeline orchestration for security recon modules with real-time streaming feed.",
       },
       { property: "og:type", content: "website" },
-      { name: "twitter:card", content: "summary_large_image" },
+      { name: "twitter:card", content: "summary" },
     ],
   }),
 });
 
-/* ------------------------------ types ------------------------------ */
+const NAV = [
+  { icon: LayoutDashboard, label: "Dashboard", to: "/" as const },
+  { icon: Boxes, label: "Assets", to: "/" as const },
+  { icon: Layers, label: "Playbooks", to: "/monitor" as const },
+  { icon: TerminalIcon, label: "Terminal", to: "/terminal" as const },
+  { icon: FileText, label: "Reports", to: "/" as const },
+  { icon: SettingsIcon, label: "Settings", to: "/" as const },
+];
 
-type NodeStatus = "online" | "offline" | "degraded";
-type NodeRow = {
-  id: string;
-  region: string;
-  status: NodeStatus;
-  ping_ms: number | null;
-  version: string;
-  uptime_s: number;
-  last_ping: string;
-  updated_at: string;
-};
-type ActivityRow = {
-  id: number;
-  node_id: string | null;
-  event_type: "deploy" | "info" | "warn" | "error";
-  message: string;
-  created_at: string;
-};
-type QueueRow = {
-  id: string;
-  label: string;
-  progress: number;
-  eta_seconds: number;
-  state: string;
-  updated_at: string;
-};
-type PerfRow = {
-  id: number;
-  sampled_at: string;
-  success_rate: number;
-  latency_ms: number;
+// Pick the first six modules for the pipeline visualization row.
+const PIPELINE = MODULES.slice(0, 6);
+
+const MODULE_ICONS: Record<string, string> = {
+  scan: "SCAN",
+  enum: "ENUM",
+  detect: "DTCT",
+  inspect: "INSP",
+  monitor: "MON",
+  report: "RPT",
+  "dns-telemetry": "DNS",
+  "host-posture-check": "HOST",
+  "ssh-key-inventory": "SSH",
 };
 
-type Conn = "connecting" | "live" | "offline";
-
-/* ------------------------------ hooks ------------------------------ */
-
-function useReaperTelemetry() {
-  const [nodes, setNodes] = useState<NodeRow[] | null>(null);
-  const [activity, setActivity] = useState<ActivityRow[] | null>(null);
-  const [queue, setQueue] = useState<QueueRow[] | null>(null);
-  const [perf, setPerf] = useState<PerfRow[] | null>(null);
-  const [conn, setConn] = useState<Conn>("connecting");
-  const [updated, setUpdated] = useState<{
-    nodes?: Date;
-    activity?: Date;
-    queue?: Date;
-    perf?: Date;
-  }>({});
-
-  const stamp = useCallback((k: keyof typeof updated) => {
-    setUpdated((u) => ({ ...u, [k]: new Date() }));
-  }, []);
-
-  const refetchAll = useCallback(async () => {
-    const [n, a, q, p] = await Promise.all([
-      supabase.from("reaper_nodes").select("*").order("id"),
-      supabase
-        .from("reaper_activity")
-        .select("*")
-        .order("created_at", { ascending: false })
-        .limit(60),
-      supabase
-        .from("reaper_queue")
-        .select("*")
-        .order("created_at", { ascending: true }),
-      supabase
-        .from("reaper_perf")
-        .select("*")
-        .order("sampled_at", { ascending: false })
-        .limit(60),
-    ]);
-    if (!n.error) {
-      setNodes((n.data as NodeRow[]) ?? []);
-      stamp("nodes");
-    }
-    if (!a.error) {
-      setActivity((a.data as ActivityRow[]) ?? []);
-      stamp("activity");
-    }
-    if (!q.error) {
-      setQueue((q.data as QueueRow[]) ?? []);
-      stamp("queue");
-    }
-    if (!p.error) {
-      setPerf(((p.data as PerfRow[]) ?? []).slice().reverse());
-      stamp("perf");
-    }
-    return !(n.error || a.error || q.error || p.error);
-  }, [stamp]);
-
-  useEffect(() => {
-    let cancelled = false;
-    let retryTimer: ReturnType<typeof setTimeout> | null = null;
-    let pollTimer: ReturnType<typeof setInterval> | null = null;
-
-    const connect = async () => {
-      setConn("connecting");
-      const ok = await refetchAll();
-      if (cancelled) return;
-      if (!ok) {
-        setConn("offline");
-        retryTimer = setTimeout(connect, 4000);
-        return;
-      }
-      setConn("live");
-      // Poll every 5s as a backstop against dropped realtime events
-      pollTimer = setInterval(refetchAll, 5000);
-    };
-
-    connect();
-
-    // Realtime subscriptions on all four tables
-    const channel = supabase
-      .channel("reaper-stream")
-      .on(
-        "postgres_changes",
-        { event: "*", schema: "public", table: "reaper_nodes" },
-        () => {
-          refetchAll();
-        },
-      )
-      .on(
-        "postgres_changes",
-        { event: "INSERT", schema: "public", table: "reaper_activity" },
-        (payload) => {
-          setActivity((prev) => {
-            const row = payload.new as ActivityRow;
-            const next = [row, ...(prev ?? [])].slice(0, 60);
-            return next;
-          });
-          stamp("activity");
-        },
-      )
-      .on(
-        "postgres_changes",
-        { event: "*", schema: "public", table: "reaper_queue" },
-        () => {
-          refetchAll();
-        },
-      )
-      .on(
-        "postgres_changes",
-        { event: "INSERT", schema: "public", table: "reaper_perf" },
-        (payload) => {
-          setPerf((prev) => {
-            const row = payload.new as PerfRow;
-            const next = [...(prev ?? []), row].slice(-60);
-            return next;
-          });
-          stamp("perf");
-        },
-      )
-      .subscribe((status) => {
-        if (status === "SUBSCRIBED") setConn("live");
-        if (status === "CHANNEL_ERROR" || status === "TIMED_OUT") setConn("offline");
-      });
-
-    return () => {
-      cancelled = true;
-      if (retryTimer) clearTimeout(retryTimer);
-      if (pollTimer) clearInterval(pollTimer);
-      supabase.removeChannel(channel);
-    };
-  }, [refetchAll, stamp]);
-
-  return { nodes, activity, queue, perf, conn, updated, refetchAll };
+function shortLabel(id: string) {
+  return MODULE_ICONS[id] ?? id.slice(0, 4).toUpperCase();
 }
 
-function useTheme() {
-  const [theme, setTheme] = useState<"dark" | "light">("dark");
-  useEffect(() => {
-    const stored = (typeof window !== "undefined"
-      ? window.localStorage.getItem("reaper-theme")
-      : null) as "dark" | "light" | null;
-    const initial = stored ?? "dark";
-    setTheme(initial);
-    document.documentElement.classList.toggle("light", initial === "light");
-  }, []);
-  const toggle = useCallback(() => {
-    setTheme((t) => {
-      const next = t === "dark" ? "light" : "dark";
-      document.documentElement.classList.toggle("light", next === "light");
-      try {
-        window.localStorage.setItem("reaper-theme", next);
-      } catch {}
-      return next;
-    });
-  }, []);
-  return { theme, toggle };
+function statusMeta(state?: ModuleState) {
+  const s = state?.status ?? "idle";
+  switch (s) {
+    case "running":
+      return { label: "PROCESSING", color: "#00ff88", border: "border-[#00ff88]", text: "text-[#00ff88]" };
+    case "success":
+      return { label: "COMPLETE", color: "#00ff88", border: "border-[#00ff88]/60", text: "text-[#00ff88]" };
+    case "error":
+      return { label: "FAILED", color: "#ff9900", border: "border-[#ff9900]", text: "text-[#ff9900]" };
+    case "waiting":
+      return { label: "QUEUED", color: "#71717a", border: "border-zinc-700", text: "text-zinc-500" };
+    default:
+      return { label: "IDLE", color: "#3f3f46", border: "border-zinc-800", text: "text-zinc-600" };
+  }
 }
 
-/* --------------------------------- ui ---------------------------------- */
-
-function ReaperDashboard() {
-  const { nodes, activity, queue, perf, conn, updated, refetchAll } =
-    useReaperTelemetry();
-  const { theme, toggle } = useTheme();
-
-  // Starts null so SSR markup and the first client render match (no hydration
-  // mismatch); the real clock starts after mount.
-  const [now, setNow] = useState<Date | null>(null);
+function useUptime() {
+  const [now, setNow] = useState<number | null>(null);
+  const startRef = useRef<number>(Date.now());
   useEffect(() => {
-    setNow(new Date());
-    const id = setInterval(() => setNow(new Date()), 1000);
-    return () => clearInterval(id);
+    startRef.current = Date.now();
+    setNow(Date.now());
+    const id = window.setInterval(() => setNow(Date.now()), 1000);
+    return () => window.clearInterval(id);
   }, []);
+  if (now === null) return "00:00:00";
+  const s = Math.floor((now - startRef.current) / 1000);
+  const hh = String(Math.floor(s / 3600)).padStart(2, "0");
+  const mm = String(Math.floor((s % 3600) / 60)).padStart(2, "0");
+  const ss = String(s % 60).padStart(2, "0");
+  return `${hh}:${mm}:${ss}`;
+}
 
-  const stats = useMemo(() => {
-    if (!nodes) return null;
-    const online = nodes.filter((n) => n.status === "online").length;
-    const avgPing =
-      Math.round(
-        (nodes
-          .filter((n) => n.ping_ms != null)
-          .reduce((s, n) => s + (n.ping_ms ?? 0), 0) /
-          Math.max(1, nodes.filter((n) => n.ping_ms != null).length)) || 0,
-      ) || 0;
-    return { active: online, total: nodes.length, avgPing };
-  }, [nodes]);
+function ReaperOpsCenter() {
+  const {
+    status,
+    lines,
+    activeJobs,
+    lastError,
+    url,
+    moduleStates,
+    send,
+    awaitJob,
+    resetModules,
+    markWaiting,
+  } = useWebSocket();
 
-  const successRate = useMemo(() => {
-    if (!perf || perf.length === 0) return null;
-    return perf[perf.length - 1].success_rate;
-  }, [perf]);
+  const [target, setTarget] = useState("scanme.nmap.org");
+  const [isRunning, setIsRunning] = useState(false);
+  const stopRef = useRef(false);
+  const uptime = useUptime();
 
-  const perfStats = useMemo(() => {
-    if (!perf || perf.length === 0) return null;
-    const rates = perf.map((p) => Number(p.success_rate));
-    const mean = rates.reduce((s, v) => s + v, 0) / rates.length;
-    const variance =
-      rates.reduce((s, v) => s + (v - mean) ** 2, 0) / rates.length;
-    return {
-      peak: Math.max(...rates).toFixed(1),
-      low: Math.min(...rates).toFixed(1),
-      mean: mean.toFixed(1),
-      sigma: Math.sqrt(variance).toFixed(2),
-    };
-  }, [perf]);
+  const termRef = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    const el = termRef.current;
+    if (el) el.scrollTop = el.scrollHeight;
+  }, [lines]);
 
-  const perfSeries = useMemo(
+  const completed = useMemo(
     () =>
-      (perf ?? []).map((p) => ({
-        t: new Date(p.sampled_at).toISOString().slice(11, 16),
-        success: Number(p.success_rate),
-      })),
-    [perf],
+      MODULES.filter((m) => {
+        const s = moduleStates[m.id]?.status;
+        return s === "success" || s === "error";
+      }).length,
+    [moduleStates],
   );
 
-  const exportSnapshot = useCallback(() => {
-    const snapshot = {
-      exported_at: new Date().toISOString(),
-      last_updated: updated,
-      stats,
-      nodes,
-      activity,
-      queue,
-      perf,
-    };
-    const blob = new Blob([JSON.stringify(snapshot, null, 2)], {
-      type: "application/json",
-    });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = `reaper-snapshot-${new Date()
-      .toISOString()
-      .replace(/[:.]/g, "-")}.json`;
-    document.body.appendChild(a);
-    a.click();
-    a.remove();
-    URL.revokeObjectURL(url);
-  }, [activity, nodes, perf, queue, stats, updated]);
+  const findings = useMemo(
+    () =>
+      lines
+        .filter((l) => l.level === "warn" || l.level === "error" || l.level === "success")
+        .slice(-6)
+        .reverse(),
+    [lines],
+  );
+
+  const runChain = async () => {
+    if (!target.trim() || status !== "open") return;
+    stopRef.current = false;
+    resetModules();
+    markWaiting(MODULES.map((m) => m.id), target.trim());
+    setIsRunning(true);
+    for (const mod of MODULES) {
+      if (stopRef.current) break;
+      const jobId = `${mod.id}-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+      send({ type: "execute", jobId, module: mod.module, target: target.trim() });
+      await awaitJob(jobId);
+    }
+    setIsRunning(false);
+  };
+
+  const stopChain = () => {
+    stopRef.current = true;
+    send({ type: "stop" });
+    setIsRunning(false);
+  };
+
+  const runSingle = (id: string) => {
+    const mod = MODULES.find((m) => m.id === id);
+    if (!mod || !target.trim() || status !== "open") return;
+    const jobId = `${mod.id}-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+    send({ type: "execute", jobId, module: mod.module, target: target.trim() });
+  };
+
+  const sysStatus =
+    status === "open"
+      ? { label: "NOMINAL", color: "text-[#00ff88]" }
+      : status === "connecting"
+        ? { label: "LINKING", color: "text-[#ff9900]" }
+        : { label: "OFFLINE", color: "text-red-500" };
+
+  // Compute pipeline SVG connectors (dashed line between adjacent nodes)
+  const pipeConnectorColor = (i: number) => {
+    const a = moduleStates[PIPELINE[i].id]?.status;
+    const b = moduleStates[PIPELINE[i + 1].id]?.status;
+    if (a === "success" && (b === "success" || b === "running")) return "#00ff88";
+    if (a === "running" || b === "running") return "#ff9900";
+    return "#333";
+  };
 
   return (
-    <div className="relative min-h-screen">
-      <div className="pointer-events-none absolute inset-0 grid-bg opacity-40" />
-      <div className="relative mx-auto flex min-h-screen max-w-[1600px] flex-col gap-5 px-4 py-5 sm:px-6 lg:px-8">
-        <TopNav
-          now={now}
-          conn={conn}
-          theme={theme}
-          onToggleTheme={toggle}
-          onExport={exportSnapshot}
-          onRefresh={refetchAll}
-        />
+    <div className="w-full min-h-screen bg-[#0a0a0a] text-zinc-400 flex overflow-hidden selection:bg-[#ff9900] selection:text-black" style={{ fontFamily: "Work Sans, ui-sans-serif, system-ui" }}>
+      {/* Left Sidebar */}
+      <aside className="w-14 bg-[#111] border-r border-white/5 flex flex-col items-center py-5 gap-6 shrink-0">
+        <div className="w-9 h-9 rounded-sm border border-[#ff9900] flex items-center justify-center text-[#ff9900] font-bold" style={{ fontFamily: "JetBrains Mono, ui-monospace, monospace" }}>
+          R
+        </div>
+        <nav className="flex flex-col gap-4 text-zinc-600">
+          {NAV.map((n, i) => {
+            const Icon = n.icon;
+            const active = i === 0;
+            return (
+              <Link
+                key={n.label}
+                to={n.to}
+                title={n.label}
+                className={`p-1.5 rounded-sm transition-colors ${
+                  active ? "text-[#ff9900] bg-[#ff9900]/5" : "hover:text-[#00ff88]"
+                }`}
+              >
+                <Icon className="w-4 h-4" />
+              </Link>
+            );
+          })}
+        </nav>
+        <div className="mt-auto flex flex-col items-center gap-2 text-[8px] text-zinc-700" style={{ fontFamily: "JetBrains Mono" }}>
+          <Radio className={`w-3 h-3 ${status === "open" ? "text-[#00ff88] animate-pulse" : "text-zinc-700"}`} />
+          <div className="rotate-180 [writing-mode:vertical-rl] uppercase tracking-widest">reaper_v2</div>
+        </div>
+      </aside>
 
-        {/* Metric cards */}
-        <section className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
-          <MetricCard
-            label="Active Nodes"
-            value={stats ? String(stats.active) : "—"}
-            sub={stats ? `/ ${stats.total} online` : "waiting for data"}
-            accent="neon"
-            icon={<Cpu className="h-4 w-4" />}
-          />
-          <MetricCard
-            label="Success Rate"
-            value={successRate != null ? successRate.toFixed(1) : "—"}
-            unit={successRate != null ? "%" : undefined}
-            sub={perf ? `${perf.length} live samples` : "waiting for data"}
-            accent="cyan"
-            icon={<ShieldCheck className="h-4 w-4" />}
-          />
-          <MetricCard
-            label="Avg Ping"
-            value={stats && stats.avgPing > 0 ? String(stats.avgPing) : "—"}
-            unit={stats && stats.avgPing > 0 ? "ms" : undefined}
-            sub={stats ? `across ${stats.active} online nodes` : "waiting for data"}
-            accent="gold"
-            icon={<Gauge className="h-4 w-4" />}
-          />
-          <MetricCard
-            label="Last Tick"
-            value={now ? now.toISOString().slice(11, 19) : "—"}
-            sub={now ? now.toISOString().slice(0, 10) + " UTC" : "waiting for clock"}
-            accent="neon"
-            icon={<Timer className="h-4 w-4" />}
-          />
-        </section>
-
-        {/* Middle: chart + node table */}
-        <section className="grid grid-cols-1 gap-4 xl:grid-cols-3">
-          <div className="panel relative overflow-hidden p-5 xl:col-span-2">
-            <PanelHeader
-              eyebrow="TELEMETRY"
-              title="Deployment Success Rate"
-              meta={
-                updated.perf
-                  ? `updated ${relTime(updated.perf, now)}`
-                  : "waiting for data"
-              }
-              dotColor="var(--neon)"
-            />
-            <div className="mt-4 h-[280px] w-full">
-              {perf == null ? (
-                <EmptyBlock label="Connecting to telemetry stream…" />
-              ) : perfSeries.length === 0 ? (
-                <EmptyBlock label="No performance samples yet." />
-              ) : (
-                <ResponsiveContainer width="100%" height="100%">
-                  <AreaChart
-                    data={perfSeries}
-                    margin={{ top: 10, right: 12, left: -12, bottom: 0 }}
-                  >
-                    <defs>
-                      <linearGradient id="gNeon" x1="0" y1="0" x2="0" y2="1">
-                        <stop
-                          offset="0%"
-                          stopColor="var(--neon)"
-                          stopOpacity={0.55}
-                        />
-                        <stop
-                          offset="100%"
-                          stopColor="var(--neon)"
-                          stopOpacity={0}
-                        />
-                      </linearGradient>
-                    </defs>
-                    <CartesianGrid
-                      stroke="color-mix(in oklab, var(--muted-foreground) 25%, transparent)"
-                      strokeDasharray="3 6"
-                    />
-                    <XAxis
-                      dataKey="t"
-                      stroke="var(--muted-foreground)"
-                      tick={{ fontSize: 11, fontFamily: "JetBrains Mono" }}
-                      tickLine={false}
-                      axisLine={false}
-                      minTickGap={24}
-                    />
-                    <YAxis
-                      domain={[75, 100]}
-                      stroke="var(--muted-foreground)"
-                      tick={{ fontSize: 11, fontFamily: "JetBrains Mono" }}
-                      tickLine={false}
-                      axisLine={false}
-                      unit="%"
-                    />
-                    <Tooltip
-                      contentStyle={{
-                        background: "var(--surface)",
-                        border: "1px solid var(--border)",
-                        borderRadius: 8,
-                        fontFamily: "JetBrains Mono",
-                        fontSize: 12,
-                        color: "var(--foreground)",
-                      }}
-                      labelStyle={{ color: "var(--neon)" }}
-                      formatter={(v: number) => [`${Number(v).toFixed(2)}%`, "success"]}
-                    />
-                    <Area
-                      type="monotone"
-                      dataKey="success"
-                      stroke="var(--neon)"
-                      strokeWidth={2}
-                      fill="url(#gNeon)"
-                      isAnimationActive={false}
-                    />
-                  </AreaChart>
-                </ResponsiveContainer>
-              )}
-            </div>
-
-            {perfStats && (
-              <div className="mt-4 grid grid-cols-2 gap-3 border-t border-border pt-4 sm:grid-cols-4">
-                <MiniStat label="Peak" value={`${perfStats.peak}%`} accent="neon" />
-                <MiniStat label="Low" value={`${perfStats.low}%`} accent="gold" />
-                <MiniStat label="Mean" value={`${perfStats.mean}%`} accent="cyan" />
-                <MiniStat label="σ" value={perfStats.sigma} accent="cyan" />
-              </div>
-            )}
+      {/* Main */}
+      <main className="flex-1 flex flex-col min-w-0" style={{ fontFamily: "JetBrains Mono, ui-monospace, monospace" }}>
+        {/* Top KPI Ticker */}
+        <header className="h-7 bg-[#111] border-b border-white/5 flex items-center px-4 overflow-hidden gap-8 shrink-0">
+          <div className="flex items-center gap-2 whitespace-nowrap">
+            <span className="text-[9px] uppercase tracking-tighter text-zinc-500">SYS_STATUS:</span>
+            <span className={`text-[9px] ${sysStatus.color}`}>{sysStatus.label}</span>
           </div>
+          <div className="flex items-center gap-2 whitespace-nowrap overflow-hidden flex-1 min-w-0">
+            <span className="text-[9px] uppercase tracking-tighter text-zinc-500">CHANNEL:</span>
+            <span className="text-[9px] text-[#ff9900] truncate">{url}</span>
+            <span className="text-[9px] uppercase tracking-tighter text-zinc-500 ml-4">ACTIVE_JOBS:</span>
+            <span className="text-[9px] text-[#00ff88]">{String(activeJobs).padStart(2, "0")}</span>
+            <span className="text-[9px] uppercase tracking-tighter text-zinc-500 ml-4">CHAIN:</span>
+            <span className="text-[9px] text-zinc-300">{completed}/{MODULES.length}</span>
+          </div>
+          <div className="ml-auto flex items-center gap-3 shrink-0">
+            <span className="text-[9px] text-zinc-500">Uptime: {uptime}</span>
+          </div>
+        </header>
 
-          <div className="panel flex flex-col overflow-hidden">
-            <div className="p-5 pb-3">
-              <PanelHeader
-                eyebrow="FLEET"
-                title="Node Health"
-                meta={
-                  nodes
-                    ? `${nodes.length} nodes · ${
-                        updated.nodes ? relTime(updated.nodes, now) : "—"
-                      }`
-                    : "waiting for data"
-                }
-                dotColor="var(--cyan)"
+        {/* Content Grid */}
+        <div className="flex-1 grid grid-cols-12 grid-rows-6 gap-1 p-1 min-h-0 overflow-hidden">
+          {/* Mission Control */}
+          <section className="col-span-3 row-span-1 bg-[#111] p-3 border border-white/5 flex flex-col justify-between min-h-0">
+            <h2 className="text-[10px] uppercase text-[#ff9900] flex justify-between">
+              <span>Mission Control</span>
+              <span className="text-[8px] text-zinc-600">ID: RP-992</span>
+            </h2>
+            <div className="mt-2 flex gap-2">
+              <input
+                type="text"
+                value={target}
+                onChange={(e) => setTarget(e.target.value)}
+                placeholder="TARGET_HOST"
+                className="flex-1 min-w-0 bg-black border border-white/10 px-2 py-1 text-xs focus:outline-none focus:border-[#ff9900] text-[#00ff88] placeholder:text-zinc-700"
               />
-            </div>
-            <div className="max-h-[340px] overflow-auto">
-              {nodes == null ? (
-                <div className="px-5 py-8">
-                  <EmptyBlock label="Connecting to fleet…" />
-                </div>
-              ) : nodes.length === 0 ? (
-                <div className="px-5 py-8">
-                  <EmptyBlock label="No active nodes" />
-                </div>
+              {isRunning ? (
+                <button
+                  onClick={stopChain}
+                  className="bg-red-600 text-black text-[10px] font-bold px-3 uppercase hover:bg-red-500"
+                >
+                  Stop
+                </button>
               ) : (
-                <table className="w-full text-left font-mono text-xs">
-                  <thead className="sticky top-0 bg-[color:var(--surface)]/95 text-[10px] uppercase tracking-widest text-muted-foreground backdrop-blur">
-                    <tr>
-                      <th className="px-5 py-2 font-medium">Node</th>
-                      <th className="px-2 py-2 font-medium">Status</th>
-                      <th className="px-2 py-2 font-medium">Ping</th>
-                      <th className="px-2 py-2 font-medium">Uptime</th>
-                      <th className="px-5 py-2 text-right font-medium">Payload</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {nodes.map((n) => (
-                      <tr
-                        key={n.id}
-                        className="group border-t border-border/60 transition-colors hover:bg-[color:var(--surface-2)]/70"
-                      >
-                        <td className="px-5 py-2.5">
-                          <div className="text-foreground">{n.id}</div>
-                          <div className="text-[10px] text-muted-foreground">
-                            {n.region}
-                          </div>
-                        </td>
-                        <td className="px-2 py-2.5">
-                          <StatusPill status={n.status} />
-                        </td>
-                        <td className="px-2 py-2.5 text-muted-foreground">
-                          {n.ping_ms != null ? `${n.ping_ms}ms` : "—"}
-                        </td>
-                        <td className="px-2 py-2.5 text-muted-foreground">
-                          {fmtUptime(n.uptime_s)}
-                        </td>
-                        <td className="px-5 py-2.5 text-right text-muted-foreground">
-                          {n.version}
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
+                <button
+                  onClick={runChain}
+                  disabled={status !== "open" || !target.trim()}
+                  className="bg-[#ff9900] text-black text-[10px] font-bold px-3 uppercase hover:bg-white disabled:opacity-40 disabled:cursor-not-allowed"
+                >
+                  Execute
+                </button>
               )}
             </div>
-          </div>
-        </section>
+          </section>
 
-        {/* Bottom: activity + queue */}
-        <section className="grid grid-cols-1 gap-4 xl:grid-cols-3">
-          <div className="panel flex flex-col p-5 xl:col-span-2">
-            <PanelHeader
-              eyebrow="STREAM"
-              title="Activity Feed"
-              meta={
-                activity
-                  ? `live · ${
-                      updated.activity ? relTime(updated.activity, now) : "—"
-                    }`
-                  : "waiting for data"
-              }
-              dotColor="var(--neon)"
-            />
-            {activity == null ? (
-              <div className="mt-4">
-                <EmptyBlock label="Awaiting event stream…" />
-              </div>
-            ) : activity.length === 0 ? (
-              <div className="mt-4">
-                <EmptyBlock label="No events yet" />
-              </div>
-            ) : (
-              <ol className="mt-4 max-h-[320px] space-y-1 overflow-auto pr-2 font-mono text-xs">
-                {activity.map((e) => (
-                  <li
-                    key={e.id}
-                    className="flex items-start gap-3 rounded px-2 py-1.5 transition-colors hover:bg-[color:var(--surface-2)]/60"
+          {/* Pipeline Orchestration */}
+          <section className="col-span-9 row-span-2 bg-[#111] border border-white/5 p-4 relative overflow-hidden min-h-0">
+            <div className="absolute top-2 left-4 text-[10px] uppercase text-zinc-500">
+              Pipeline Orchestration · Supply Chain
+            </div>
+            <div className="absolute top-2 right-4 text-[9px] uppercase text-zinc-600">
+              {isRunning ? <span className="text-[#00ff88]">▶ CHAIN LIVE</span> : "IDLE"}
+            </div>
+            <div className="h-full w-full flex items-center justify-between px-2 relative pt-4">
+              {/* dashed connectors between nodes */}
+              <svg className="absolute inset-0 w-full h-full pointer-events-none">
+                {PIPELINE.slice(0, -1).map((_, i) => {
+                  const step = 100 / PIPELINE.length;
+                  const x1 = `${step * (i + 1) - step / 2 + 6}%`;
+                  const x2 = `${step * (i + 1) + step / 2 - 6}%`;
+                  return (
+                    <line
+                      key={i}
+                      x1={x1}
+                      x2={x2}
+                      y1="50%"
+                      y2="50%"
+                      stroke={pipeConnectorColor(i)}
+                      strokeWidth={1}
+                      strokeDasharray="4 4"
+                    />
+                  );
+                })}
+              </svg>
+
+              {PIPELINE.map((mod) => {
+                const st = moduleStates[mod.id];
+                const meta = statusMeta(st);
+                const running = st?.status === "running";
+                const done = st?.status === "success";
+                const err = st?.status === "error";
+                return (
+                  <button
+                    key={mod.id}
+                    onClick={() => runSingle(mod.id)}
+                    className="flex flex-col items-center gap-2 relative z-10 group"
                   >
-                    <span className="text-muted-foreground">
-                      {new Date(e.created_at).toISOString().slice(11, 19)}
-                    </span>
-                    <EventTag type={e.event_type} />
-                    <span className="flex-1 text-foreground/90">{e.message}</span>
-                  </li>
-                ))}
-              </ol>
-            )}
-          </div>
-
-          <div className="panel flex flex-col p-5">
-            <PanelHeader
-              eyebrow="PIPELINE"
-              title="Deployment Queue"
-              meta={
-                queue
-                  ? `${queue.length} pending · ${
-                      updated.queue ? relTime(updated.queue, now) : "—"
-                    }`
-                  : "waiting for data"
-              }
-              dotColor="var(--gold)"
-            />
-            {queue == null ? (
-              <div className="mt-4">
-                <EmptyBlock label="Awaiting pipeline…" />
-              </div>
-            ) : queue.length === 0 ? (
-              <div className="mt-4">
-                <EmptyBlock label="Queue empty" />
-              </div>
-            ) : (
-              <ul className="mt-4 space-y-4">
-                {queue.map((q) => (
-                  <li key={q.id} className="group">
-                    <div className="flex items-center justify-between gap-3 font-mono text-xs">
-                      <div className="min-w-0">
-                        <div className="truncate text-foreground">{q.label}</div>
-                        <div className="text-[10px] text-muted-foreground">
-                          {q.id} · ETA {fmtEta(q.eta_seconds)}
-                        </div>
+                    <div
+                      className={`w-20 h-20 bg-black border ${meta.border} ${
+                        running ? "shadow-[0_0_12px_rgba(0,255,136,0.25)]" : ""
+                      } ${err ? "shadow-[0_0_12px_rgba(255,153,0,0.25)]" : ""} flex flex-col items-center justify-center p-2 transition-colors group-hover:border-white/60`}
+                    >
+                      <div className={`${meta.text} mb-1 ${running ? "animate-pulse" : ""}`}>
+                        <Zap className="w-4 h-4" />
                       </div>
-                      <button
-                        type="button"
-                        className="shrink-0 rounded border border-border p-1 text-muted-foreground transition-colors hover:border-[color:var(--danger)] hover:text-[color:var(--danger)]"
-                        aria-label={`Cancel ${q.id}`}
-                        title="Cancel (read-only)"
-                      >
-                        <X className="h-3 w-3" />
-                      </button>
+                      <span className="text-[9px]">{shortLabel(mod.id)}</span>
+                      <div className="w-full h-1 bg-zinc-900 mt-2 relative overflow-hidden">
+                        <div
+                          className="h-full transition-all"
+                          style={{
+                            width: `${done ? 100 : st?.progress ?? 0}%`,
+                            background: meta.color,
+                          }}
+                        />
+                        {running && (
+                          <div className="absolute inset-0 bg-white/20 animate-[shimmer_2s_infinite] translate-x-[-100%]" />
+                        )}
+                      </div>
                     </div>
-                    <div className="mt-2 h-1.5 w-full overflow-hidden rounded-full bg-[color:var(--surface-2)]">
-                      <div
-                        className="h-full rounded-full transition-[width] duration-700 ease-out"
-                        style={{
-                          width: `${q.progress}%`,
-                          background:
-                            "linear-gradient(90deg, var(--gold), var(--neon))",
-                          boxShadow:
-                            "0 0 12px -2px color-mix(in oklab, var(--neon) 60%, transparent)",
-                        }}
-                      />
+                    <span className={`text-[8px] uppercase tracking-widest ${meta.text}`}>{meta.label}</span>
+                  </button>
+                );
+              })}
+            </div>
+          </section>
+
+          {/* Module Manifest */}
+          <section className="col-span-3 row-span-5 bg-[#111] border border-white/5 flex flex-col min-h-0">
+            <div className="p-2 border-b border-white/5 text-[10px] uppercase flex justify-between shrink-0">
+              <span className="text-zinc-400">Module Manifest</span>
+              <span className={isRunning ? "text-[#00ff88]" : "text-zinc-600"}>
+                AUTO_CHAIN: {isRunning ? "ON" : "OFF"}
+              </span>
+            </div>
+            <div className="flex-1 overflow-y-auto p-2 space-y-1 min-h-0">
+              {MODULES.map((mod) => {
+                const st = moduleStates[mod.id];
+                const meta = statusMeta(st);
+                const active = st?.status === "running" || st?.status === "error";
+                return (
+                  <button
+                    key={mod.id}
+                    onClick={() => runSingle(mod.id)}
+                    className={`w-full text-left p-2 bg-black border ${
+                      active ? meta.border : "border-white/5"
+                    } flex flex-col gap-1 hover:border-white/30`}
+                  >
+                    <div className="flex justify-between items-center gap-2">
+                      <span className="text-[10px] font-bold text-zinc-300 truncate">
+                        {mod.name.toUpperCase().replace(/\s+/g, "_")}
+                      </span>
+                      <span className={`text-[8px] px-1 border ${meta.border} ${meta.text} shrink-0`}>
+                        {meta.label}
+                      </span>
                     </div>
-                    <div className="mt-1 flex justify-between font-mono text-[10px] text-muted-foreground">
-                      <span>{q.progress}%</span>
-                      <span>{q.state}</span>
-                    </div>
-                  </li>
-                ))}
-              </ul>
+                    {st?.progress ? (
+                      <div className="w-full bg-zinc-900 h-0.5">
+                        <div
+                          className="h-full transition-all"
+                          style={{ width: `${st.progress}%`, background: meta.color }}
+                        />
+                      </div>
+                    ) : null}
+                    {st?.lastLine && (
+                      <div className={`text-[8px] truncate ${meta.text}`}>{st.lastLine}</div>
+                    )}
+                  </button>
+                );
+              })}
+            </div>
+          </section>
+
+          {/* Live Terminal */}
+          <section className="col-span-6 row-span-3 bg-black border border-white/5 p-2 flex flex-col min-h-0">
+            <div className="flex items-center justify-between mb-2 pb-1 border-b border-zinc-800 shrink-0">
+              <div className="flex items-center gap-2">
+                <div className={`w-2 h-2 rounded-full ${status === "open" ? "bg-[#00ff88] animate-pulse" : "bg-zinc-700"}`} />
+                <span className="text-[9px] uppercase tracking-widest text-zinc-500">Terminal_Log</span>
+              </div>
+              <span className="text-[9px] text-zinc-700 truncate ml-2">STREAMING VIA {url}</span>
+            </div>
+            <div ref={termRef} className="flex-1 overflow-y-auto text-[10px] leading-tight space-y-0.5 min-h-0">
+              {lines.length === 0 ? (
+                <div className="text-zinc-700 italic">
+                  waiting for pipeline output — enter target and execute the chain…
+                </div>
+              ) : (
+                lines.map((l) => (
+                  <div key={l.id} className="whitespace-pre-wrap break-words">
+                    <span className="text-zinc-700">
+                      [{new Date(l.ts).toLocaleTimeString()}]
+                    </span>{" "}
+                    <span className={levelClass(l.level)}>{l.text}</span>
+                  </div>
+                ))
+              )}
+              {isRunning && (
+                <span className="inline-block w-1.5 h-3 bg-zinc-500 ml-1 animate-pulse align-middle" />
+              )}
+            </div>
+            {lastError && (
+              <div className="mt-1 text-[9px] text-red-400 border-t border-red-900/40 pt-1 shrink-0">
+                {lastError}
+              </div>
             )}
-          </div>
-        </section>
+          </section>
 
-        <footer className="flex flex-wrap items-center justify-between gap-2 pb-2 pt-2 font-mono text-[10px] uppercase tracking-widest text-muted-foreground">
-          <span>REAPER // TERMINAL v7.3.1 · LIVE FEED</span>
-          <span>© {now ? now.getUTCFullYear() : "----"} SECRSCH LAB</span>
-        </footer>
-      </div>
-    </div>
-  );
-}
+          {/* Live Discoveries */}
+          <section className="col-span-3 row-span-3 bg-[#111] border border-white/5 flex flex-col min-h-0">
+            <div className="p-2 border-b border-white/5 text-[10px] uppercase text-[#00ff88] flex items-center justify-between shrink-0">
+              <span>Live Discoveries</span>
+              <Shield className="w-3 h-3" />
+            </div>
+            <div className="p-2 space-y-2 overflow-y-auto min-h-0 flex-1">
+              {findings.length === 0 ? (
+                <div className="text-[9px] text-zinc-700 italic">no discoveries yet.</div>
+              ) : (
+                findings.map((f) => {
+                  const color =
+                    f.level === "error"
+                      ? "#ff9900"
+                      : f.level === "warn"
+                        ? "#ff9900"
+                        : "#00ff88";
+                  const label =
+                    f.level === "error" ? "CRITICAL" : f.level === "warn" ? "WARNING" : "SUCCESS";
+                  return (
+                    <div
+                      key={f.id}
+                      className="border-l-2 p-2 bg-black"
+                      style={{ borderLeftColor: color }}
+                    >
+                      <div className="flex justify-between text-[9px] uppercase">
+                        <span style={{ color }}>{label}</span>
+                        {f.module && <span className="text-zinc-600">{f.module}</span>}
+                      </div>
+                      <div className="text-[10px] text-white mt-0.5 break-words">{f.text}</div>
+                    </div>
+                  );
+                })
+              )}
+            </div>
+          </section>
 
-/* ------------------------------ subcomponents ---------------------------- */
-
-function TopNav({
-  now,
-  conn,
-  theme,
-  onToggleTheme,
-  onExport,
-  onRefresh,
-}: {
-  now: Date | null;
-  conn: Conn;
-  theme: "dark" | "light";
-  onToggleTheme: () => void;
-  onExport: () => void;
-  onRefresh: () => void;
-}) {
-  return (
-    <header className="panel relative flex flex-wrap items-center gap-4 px-4 py-3 sm:px-5">
-      <div className="flex items-center gap-3">
-        <div className="relative grid h-9 w-9 shrink-0 place-items-center rounded-md border border-[color:var(--neon)]/40 bg-[color:var(--surface-2)] glow-neon">
-          <Radio className="h-4 w-4 text-[color:var(--neon)]" />
-        </div>
-        <div className="min-w-0">
-          <div className="font-mono text-sm font-semibold tracking-[0.3em] text-foreground">
-            REAPER
-          </div>
-          <div className="font-mono text-[10px] uppercase tracking-widest text-muted-foreground">
-            Sensor Network Terminal
-          </div>
-        </div>
-      </div>
-
-      <div className="ml-auto flex flex-wrap items-center gap-2 sm:gap-3">
-        <ConnectionBadge conn={conn} />
-        <div className="hidden font-mono text-xs text-muted-foreground md:block">
-          <span className="text-[color:var(--cyan)]">SYS</span>{" "}
-          {now ? now.toISOString().replace("T", " ").slice(0, 19) : "--:--:--"} UTC
-        </div>
-        <Link
-          to="/terminal"
-          className="flex items-center gap-1.5 rounded-md border border-[color:var(--cyan)]/40 bg-[color:var(--surface-2)] px-3 py-2 font-mono text-[11px] uppercase tracking-widest text-[color:var(--cyan)] transition-colors hover:bg-[color:var(--cyan)]/10"
-        >
-          <TerminalSquare className="h-3.5 w-3.5" />
-          Terminal
-        </Link>
-        <IconButton
-          label="Refresh telemetry"
-          onClick={onRefresh}
-          accent="cyan"
-        >
-          <Signal className="h-4 w-4" />
-        </IconButton>
-        <IconButton
-          label={theme === "dark" ? "Switch to light mode" : "Switch to dark mode"}
-          onClick={onToggleTheme}
-          accent="gold"
-        >
-          {theme === "dark" ? (
-            <Sun className="h-4 w-4" />
-          ) : (
-            <Moon className="h-4 w-4" />
-          )}
-        </IconButton>
-        <button
-          type="button"
-          onClick={onExport}
-          className="flex items-center gap-1.5 rounded-md border border-[color:var(--neon)]/40 bg-[color:var(--surface-2)] px-3 py-2 font-mono text-[11px] uppercase tracking-widest text-[color:var(--neon)] transition-colors hover:bg-[color:var(--neon)]/10"
-        >
-          <Download className="h-3.5 w-3.5" />
-          Export Snapshot
-        </button>
-        <IconButton label="Notifications" accent="gold">
-          <Bell className="h-4 w-4" />
-          <span className="absolute right-1.5 top-1.5 h-1.5 w-1.5 rounded-full bg-[color:var(--gold)] pulse-dot" />
-        </IconButton>
-      </div>
-    </header>
-  );
-}
-
-function IconButton({
-  children,
-  label,
-  onClick,
-  accent = "cyan",
-}: {
-  children: React.ReactNode;
-  label: string;
-  onClick?: () => void;
-  accent?: "cyan" | "gold" | "neon";
-}) {
-  const color = `var(--${accent})`;
-  return (
-    <button
-      type="button"
-      aria-label={label}
-      title={label}
-      onClick={onClick}
-      className="relative grid h-9 w-9 place-items-center rounded-md border border-border bg-[color:var(--surface-2)] text-muted-foreground transition-colors hover:text-[color:var(--foreground)]"
-      style={{ borderColor: undefined }}
-      onMouseEnter={(e) => (e.currentTarget.style.borderColor = color)}
-      onMouseLeave={(e) => (e.currentTarget.style.borderColor = "")}
-    >
-      {children}
-    </button>
-  );
-}
-
-function ConnectionBadge({ conn }: { conn: Conn }) {
-  const cfg =
-    conn === "live"
-      ? { c: "var(--neon)", label: "LIVE" }
-      : conn === "connecting"
-        ? { c: "var(--gold)", label: "CONNECTING" }
-        : { c: "var(--danger)", label: "OFFLINE" };
-  return (
-    <div
-      className="flex items-center gap-2 rounded-md border px-2.5 py-1.5 font-mono text-[11px] uppercase tracking-widest"
-      style={{
-        borderColor: `color-mix(in oklab, ${cfg.c} 45%, transparent)`,
-        color: cfg.c,
-        background: `color-mix(in oklab, ${cfg.c} 10%, transparent)`,
-      }}
-    >
-      {conn === "offline" ? (
-        <WifiOff className="h-3 w-3" />
-      ) : (
-        <span className="relative flex h-2 w-2">
-          <span
-            className="absolute inset-0 rounded-full pulse-dot"
-            style={{ background: cfg.c }}
-          />
-          <span
-            className="relative h-2 w-2 rounded-full"
-            style={{ background: cfg.c }}
-          />
-        </span>
-      )}
-      {cfg.label}
-    </div>
-  );
-}
-
-function MetricCard({
-  label,
-  value,
-  unit,
-  sub,
-  accent,
-  icon,
-}: {
-  label: string;
-  value: string;
-  unit?: string;
-  sub?: string;
-  accent: "neon" | "cyan" | "gold";
-  icon: React.ReactNode;
-}) {
-  const color = `var(--${accent})`;
-  return (
-    <div className="panel group relative overflow-hidden p-4">
-      <div
-        className="pointer-events-none absolute -right-8 -top-8 h-24 w-24 rounded-full opacity-40 blur-2xl transition-opacity group-hover:opacity-70"
-        style={{ background: color }}
-      />
-      <div className="flex items-center justify-between font-mono text-[10px] uppercase tracking-widest text-muted-foreground">
-        <span className="flex items-center gap-1.5">
-          <span style={{ color }}>{icon}</span>
-          {label}
-        </span>
-        <Signal className="h-3 w-3 opacity-50" />
-      </div>
-      <div className="mt-3 flex items-baseline gap-1 font-mono">
-        <span
-          className="text-3xl font-semibold tracking-tight"
-          style={{
-            color,
-            textShadow: `0 0 22px color-mix(in oklab, ${color} 40%, transparent)`,
-          }}
-        >
-          {value}
-        </span>
-        {unit ? <span className="text-sm text-muted-foreground">{unit}</span> : null}
-      </div>
-      {sub ? (
-        <div className="mt-1 font-mono text-[11px] text-muted-foreground">
-          {sub}
-        </div>
-      ) : null}
-    </div>
-  );
-}
-
-function MiniStat({
-  label,
-  value,
-  accent,
-}: {
-  label: string;
-  value: string;
-  accent: "neon" | "cyan" | "gold";
-}) {
-  const color = `var(--${accent})`;
-  return (
-    <div className="flex flex-col gap-0.5 font-mono">
-      <span className="text-[10px] uppercase tracking-widest text-muted-foreground">
-        {label}
-      </span>
-      <span className="text-sm" style={{ color }}>
-        {value}
-      </span>
-    </div>
-  );
-}
-
-function PanelHeader({
-  eyebrow,
-  title,
-  meta,
-  dotColor,
-}: {
-  eyebrow: string;
-  title: string;
-  meta?: string;
-  dotColor?: string;
-}) {
-  return (
-    <div className="flex items-end justify-between gap-3">
-      <div className="min-w-0">
-        <div className="flex items-center gap-2 font-mono text-[10px] uppercase tracking-[0.25em] text-muted-foreground">
-          {dotColor ? (
-            <span
-              className="inline-block h-1.5 w-1.5 rounded-full pulse-dot"
-              style={{ background: dotColor }}
+          {/* KPI Strip */}
+          <section className="col-span-9 row-span-1 bg-[#111] border border-white/5 grid grid-cols-4 divide-x divide-white/5 min-h-0">
+            <KpiCell
+              icon={<Activity className="w-3 h-3" />}
+              label="Scan Stream"
+              value={`${lines.length}`}
+              hint="lines"
+              color="text-[#00ff88]"
             />
-          ) : null}
-          {eyebrow}
+            <KpiCell
+              icon={<Gauge className="w-3 h-3" />}
+              label="Chain Progress"
+              value={`${completed}/${MODULES.length}`}
+              hint={`${Math.round((completed / MODULES.length) * 100)}%`}
+              color="text-[#ff9900]"
+            />
+            <KpiCell
+              icon={<Database className="w-3 h-3" />}
+              label="Active Jobs"
+              value={String(activeJobs).padStart(2, "0")}
+              hint="live"
+              color="text-white"
+            />
+            <KpiCell
+              icon={<BarChart3 className="w-3 h-3" />}
+              label="Findings"
+              value={String(findings.length)}
+              hint="warn+err"
+              color="text-[#ff9900]"
+            />
+          </section>
         </div>
-        <h2 className="mt-1 truncate font-mono text-base font-semibold text-foreground">
-          {title}
-        </h2>
+      </main>
+
+      <style>{`@keyframes shimmer { 100% { transform: translateX(100%); } }`}</style>
+    </div>
+  );
+}
+
+function KpiCell({
+  icon,
+  label,
+  value,
+  hint,
+  color,
+}: {
+  icon: React.ReactNode;
+  label: string;
+  value: string;
+  hint: string;
+  color: string;
+}) {
+  return (
+    <div className="p-2 flex flex-col justify-center gap-0.5">
+      <span className="text-[8px] uppercase text-zinc-600 flex items-center gap-1">
+        {icon} {label}
+      </span>
+      <div className="flex items-baseline gap-2">
+        <span className={`text-sm ${color}`}>{value}</span>
+        <span className="text-[8px] text-zinc-600 uppercase">{hint}</span>
       </div>
-      {meta ? (
-        <div className="shrink-0 font-mono text-[10px] uppercase tracking-widest text-muted-foreground">
-          {meta}
-        </div>
-      ) : null}
     </div>
   );
 }
 
-function StatusPill({ status }: { status: NodeStatus }) {
-  const map: Record<NodeStatus, { c: string; label: string }> = {
-    online: { c: "var(--neon)", label: "ONLINE" },
-    offline: { c: "var(--danger)", label: "OFFLINE" },
-    degraded: { c: "var(--warn)", label: "DEGRADED" },
-  };
-  const { c, label } = map[status];
-  return (
-    <span
-      className="inline-flex items-center gap-1.5 rounded-sm border px-1.5 py-0.5 font-mono text-[10px] tracking-widest"
-      style={{
-        borderColor: `color-mix(in oklab, ${c} 45%, transparent)`,
-        color: c,
-        background: `color-mix(in oklab, ${c} 8%, transparent)`,
-      }}
-    >
-      <CircleDot className="h-2.5 w-2.5" />
-      {label}
-    </span>
-  );
-}
-
-function EventTag({ type }: { type: string }) {
-  const map: Record<string, string> = {
-    deploy: "var(--neon)",
-    info: "var(--cyan)",
-    warn: "var(--gold)",
-    error: "var(--danger)",
-  };
-  const c = map[type] ?? "var(--muted-foreground)";
-  return (
-    <span
-      className="w-14 shrink-0 rounded-sm border px-1 text-center text-[10px] uppercase tracking-widest"
-      style={{
-        borderColor: `color-mix(in oklab, ${c} 40%, transparent)`,
-        color: c,
-        background: `color-mix(in oklab, ${c} 8%, transparent)`,
-      }}
-    >
-      {type}
-    </span>
-  );
-}
-
-function EmptyBlock({ label }: { label: string }) {
-  return (
-    <div className="grid h-full min-h-[120px] w-full place-items-center rounded-md border border-dashed border-border/70 bg-[color:var(--surface-2)]/30 p-6 text-center font-mono text-[11px] uppercase tracking-widest text-muted-foreground">
-      {label}
-    </div>
-  );
-}
-
-/* ------------------------------ formatters ---------------------------- */
-
-function fmtUptime(s: number): string {
-  if (!s) return "—";
-  const d = Math.floor(s / 86400);
-  const h = Math.floor((s % 86400) / 3600);
-  const m = Math.floor((s % 3600) / 60);
-  if (d > 0) return `${d}d ${h}h`;
-  if (h > 0) return `${h}h ${m}m`;
-  return `${m}m`;
-}
-
-function fmtEta(s: number): string {
-  if (s <= 0) return "—";
-  const m = Math.floor(s / 60);
-  const sec = s % 60;
-  return `${String(m).padStart(2, "0")}:${String(sec).padStart(2, "0")}`;
-}
-
-function relTime(then: Date, now: Date | null): string {
-  if (!now) return "—";
-  const diff = Math.max(0, Math.floor((now.getTime() - then.getTime()) / 1000));
-  if (diff < 5) return "just now";
-  if (diff < 60) return `${diff}s ago`;
-  const m = Math.floor(diff / 60);
-  if (m < 60) return `${m}m ago`;
-  const h = Math.floor(m / 60);
-  return `${h}h ago`;
+function levelClass(level: string) {
+  switch (level) {
+    case "success":
+      return "text-[#00ff88]";
+    case "error":
+      return "text-red-400";
+    case "warn":
+      return "text-[#ff9900]";
+    case "system":
+      return "text-[#ff9900]/80";
+    case "output":
+      return "text-zinc-300";
+    default:
+      return "text-zinc-500";
+  }
 }
